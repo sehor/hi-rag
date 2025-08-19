@@ -1,0 +1,18 @@
+{
+  "watch": ["api"],
+  "ext": "ts,mts,js,json",
+  "ignore": ["api/dist/*", "node_modules"],
+  "exec": "tsx api/server.ts",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 1500,
+  "restartable": "rs",
+  "verbose": true,
+  "signal": "SIGTERM",
+  "killTimeout": 5000,
+  "stdout": true,
+  "stderr": true,
+  "colours": true,
+  "legacyWatch": false
+}
