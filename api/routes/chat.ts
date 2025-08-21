@@ -374,8 +374,15 @@ router.get('/models', async (req: Request, res: Response) => {
   try {
     // 返回常用的模型列表
     const models = [
-      { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
+      { id: 'openai/gpt-5-mini', name: 'GPT-5 Mini', provider: 'OpenAI' },
+      { id: 'google/gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', provider: 'Google' },
       { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI' },
+      { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku', provider: 'Anthropic' },
+      { id: 'x-ai/grok-4', name: 'Grok 4', provider: 'X.AI' },
+      { id: 'qwen/qwen3-235b-a22b-thinking-2507', name: 'Qwen3 235B Thinking', provider: 'Qwen' },
+      { id: 'deepseek/deepseek-chat-v3-0324:free', name: 'DeepSeek Chat V3 (Free)', provider: 'DeepSeek' },
+      // 原有模型
+      { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI' },
       { id: 'openai/gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'OpenAI' },
       { id: 'anthropic/claude-3-opus', name: 'Claude 3 Opus', provider: 'Anthropic' },
       { id: 'anthropic/claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'Anthropic' },

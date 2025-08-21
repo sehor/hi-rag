@@ -36,7 +36,7 @@ const Chat: React.FC = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [selectedModel, setSelectedModel] = useState('openai/gpt-4o');
+  const [selectedModel, setSelectedModel] = useState('openai/gpt-5-mini'); // 设置默认模型为GPT-5 Mini
   const [availableModels, setAvailableModels] = useState<Array<{id: string, name: string, provider: string}>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
