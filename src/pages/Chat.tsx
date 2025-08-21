@@ -36,6 +36,8 @@ const Chat: React.FC = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [selectedModel, setSelectedModel] = useState('openai/gpt-4o');
+  const [availableModels, setAvailableModels] = useState<Array<{id: string, name: string, provider: string}>>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -91,10 +93,29 @@ const Chat: React.FC = () => {
   };
 
   /**
+   * 加载可用模型列表
+   */
+  const loadModels = async () => {
+    try {
+      const response = await fetch('/api/chat/models');
+      if (response.ok) {
+        const result = await response.json();
+        setAvailableModels(result.data || []);
+      }
+    } catch (error) {
+      console.error('加载模型列表失败:', error);
+    }
+  };
+
+  useEffect(() => {
+    loadModels();
+  }, []);
+
+  /**
    * 发送消息
    */
   const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+    if (!inputMessage.trim() || isLoading || !user) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -113,22 +134,58 @@ const Chat: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // TODO: 调用AI API
-      // 模拟AI回复
-      setTimeout(() => {
+      // 准备消息历史
+      const chatMessages = [...messages, userMessage].map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+
+      // 调用RAG聊天API
+      const response = await fetch('/api/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: chatMessages,
+          model: selectedModel,
+          conversationId: currentConversation,
+          userId: user.id // 添加用户ID
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`API请求失败: ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
         const aiMessage: Message = {
           id: (Date.now() + 1).toString(),
-          content: `这是对"${userMessage.content}"的AI回复。目前这是一个模拟回复，实际的AI功能将在后续实现。`,
+          content: result.data.message,
           role: 'assistant',
           timestamp: new Date().toISOString(),
-          sources: ['文档1.pdf', '文档2.txt']
+          sources: result.data.sources || [] // 使用API返回的来源
         };
         
         setMessages(prev => [...prev, aiMessage]);
-        setIsLoading(false);
-      }, 1000);
+      } else {
+        throw new Error(result.error || '未知错误');
+      }
     } catch (error) {
       console.error('发送消息失败:', error);
+      
+      // 显示错误消息
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: `抱歉，发生了错误：${error instanceof Error ? error.message : '未知错误'}`,
+        role: 'assistant',
+        timestamp: new Date().toISOString()
+      };
+      
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
       setIsLoading(false);
     }
   };
@@ -235,6 +292,22 @@ const Chat: React.FC = () => {
                 <History className="w-5 h-5" />
               </button>
               <h1 className="text-xl font-semibold text-gray-900">AI智能问答</h1>
+              
+              {/* 模型选择器 */}
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-600">模型:</label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name} ({model.provider})
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <button
               onClick={createNewConversation}

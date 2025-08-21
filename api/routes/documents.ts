@@ -1,9 +1,8 @@
 /**
- * 文档管理API路由
+ * 文档路由 - 处理文档上传、保存、查询等功能
  */
 import express from 'express';
 import multer from 'multer';
-import mammoth from 'mammoth';
 import { supabaseAdmin } from '../lib/supabase.js';
 
 const router = express.Router();
@@ -15,6 +14,21 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB
   },
   fileFilter: (req, file, cb) => {
+    // 修复中文文件名编码问题
+    if (file.originalname) {
+      try {
+        // 检测并修复编码问题
+        const decoded = Buffer.from(file.originalname, 'latin1').toString('utf8');
+        // 验证解码是否成功（检查是否包含有效的中文字符）
+        if (decoded !== file.originalname && /[\u4e00-\u9fff]/.test(decoded)) {
+          file.originalname = decoded;
+          console.log('✅ 文件名编码修复成功:', file.originalname);
+        }
+      } catch (error) {
+        console.warn('⚠️ 文件名编码转换失败，保持原文件名:', error);
+      }
+    }
+    
     const allowedTypes = [
       'application/pdf',
       'text/plain',
@@ -30,30 +44,232 @@ const upload = multer({
   }
 });
 
+// 定义分块数据的接口
+interface ChunkData {
+  text: string;
+  metadata: {
+    source: string;
+    page_number: number;
+    section: string | null;
+  };
+}
+
 /**
- * 提取文件内容
+ * 调用新的 RAG 分块服务处理文件
  */
-async function extractFileContent(file: Express.Multer.File): Promise<string> {
+async function callRagChunksService(file: Express.Multer.File): Promise<ChunkData[]> {
+  console.log('🔄 调用 RAG 分块服务处理文件...');
+  console.log('- 文件名:', file.originalname);
+  console.log('- 文件类型:', file.mimetype);
+  console.log('- 文件大小:', file.size, 'bytes');
+  
   try {
+    // 构建FormData发送给RAG分块服务
+    const formData = new FormData();
+    const blob = new Blob([file.buffer], { type: file.mimetype });
+    formData.append('file', blob, file.originalname);
+    
+    // 添加语言参数
+    formData.append('languages', '["zho", "eng"]'); // 中文和英文支持
+    
+    // 调用新的 RAG 分块服务
+    const unstructuredUrl = process.env.UNSTRUCTURED_API_URL || 'http://localhost:8000';
+    const response = await fetch(`${unstructuredUrl}/partition/rag-chunks`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`RAG分块服务响应错误: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log('✅ RAG分块服务处理完成');
+    console.log('- 返回分块数量:', result.length);
+    
+    if (!Array.isArray(result)) {
+      throw new Error('RAG分块服务返回的数据格式无效');
+    }
+    
+    // 验证返回的数据格式
+    const validChunks = result.filter(chunk => 
+      chunk && 
+      typeof chunk.text === 'string' && 
+      chunk.text.trim() && 
+      chunk.metadata &&
+      typeof chunk.metadata.source === 'string'
+    );
+    
+    if (validChunks.length === 0) {
+      throw new Error('未能从文档中提取到有效的分块内容');
+    }
+    
+    console.log('- 有效分块数量:', validChunks.length);
+    console.log('- 平均分块长度:', Math.round(validChunks.reduce((sum, chunk) => sum + chunk.text.length, 0) / validChunks.length));
+    
+    return validChunks;
+    
+  } catch (error) {
+    console.error('❌ RAG分块服务调用失败:', error);
+    console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
+    console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
+    throw new Error(`文件处理失败: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
+}
+
+/**
+ * 标准化文本块大小 - 合并过小的块，分割过大的块
+ */
+function normalizeChunks(chunks: ChunkData[]): ChunkData[] {
+  console.log('🔧 开始标准化文本块...');
+  console.log('- 原始分块数量:', chunks.length);
+  
+  const MIN_CHUNK_SIZE = 512;
+  const MAX_CHUNK_SIZE = 1024;
+  const normalizedChunks: ChunkData[] = [];
+  
+  let i = 0;
+  while (i < chunks.length) {
+    const currentChunk = chunks[i];
+    
+    // 如果当前块过大，需要分割
+    if (currentChunk.text.length > MAX_CHUNK_SIZE) {
+      console.log(`- 分割过大文本块 (${currentChunk.text.length} 字符)`);
+      
+      // 按最大尺寸分割文本
+      let start = 0;
+      let partIndex = 0;
+      
+      while (start < currentChunk.text.length) {
+        const end = Math.min(start + MAX_CHUNK_SIZE, currentChunk.text.length);
+        const partText = currentChunk.text.slice(start, end).trim();
+        
+        if (partText.length > 0) {
+          normalizedChunks.push({
+            text: partText,
+            metadata: {
+              ...currentChunk.metadata,
+              section: currentChunk.metadata.section ? 
+                `${currentChunk.metadata.section}_part${partIndex + 1}` : 
+                `part${partIndex + 1}`
+            }
+          });
+          partIndex++;
+        }
+        
+        start = end;
+      }
+      
+      i++;
+    }
+    // 如果当前块过小，尝试与后续块合并
+    else if (currentChunk.text.length < MIN_CHUNK_SIZE && i < chunks.length - 1) {
+      console.log(`- 合并过小文本块 (${currentChunk.text.length} 字符)`);
+      
+      let mergedText = currentChunk.text;
+      let mergedMetadata = currentChunk.metadata;
+      let j = i + 1;
+      
+      // 继续合并后续的小块，直到达到最小尺寸或没有更多块
+      while (j < chunks.length && mergedText.length < MIN_CHUNK_SIZE) {
+        const nextChunk = chunks[j];
+        const potentialMerged = mergedText + '\n\n' + nextChunk.text;
+        
+        // 如果合并后不会超过最大尺寸，则合并
+        if (potentialMerged.length <= MAX_CHUNK_SIZE) {
+          mergedText = potentialMerged;
+          j++;
+        } else {
+          break;
+        }
+      }
+      
+      normalizedChunks.push({
+        text: mergedText.trim(),
+        metadata: mergedMetadata
+      });
+      
+      i = j;
+    }
+    // 大小合适的块直接保留
+    else {
+      normalizedChunks.push(currentChunk);
+      i++;
+    }
+  }
+  
+  console.log('✅ 文本块标准化完成');
+  console.log('- 标准化后分块数量:', normalizedChunks.length);
+  console.log('- 平均分块长度:', Math.round(normalizedChunks.reduce((sum, chunk) => sum + chunk.text.length, 0) / normalizedChunks.length));
+  
+  // 验证所有块的大小
+  const oversizedChunks = normalizedChunks.filter(chunk => chunk.text.length > MAX_CHUNK_SIZE);
+  const undersizedChunks = normalizedChunks.filter(chunk => chunk.text.length < MIN_CHUNK_SIZE);
+  
+  if (oversizedChunks.length > 0) {
+    console.warn(`⚠️ 仍有 ${oversizedChunks.length} 个过大的文本块`);
+  }
+  if (undersizedChunks.length > 0) {
+    console.warn(`⚠️ 仍有 ${undersizedChunks.length} 个过小的文本块`);
+  }
+  
+  return normalizedChunks;
+}
+
+/**
+ * 提取文件内容并分块 - 使用新的 RAG 分块服务
+ */
+async function extractFileContentAndChunks(file: Express.Multer.File): Promise<ChunkData[]> {
+  console.log('🔍 开始提取文件内容并分块...');
+  console.log('- 文件类型:', file.mimetype);
+  console.log('- 文件大小:', file.size, 'bytes');
+  
+  try {
+    let chunks: ChunkData[];
+    
     switch (file.mimetype) {
       case 'application/pdf':
-        const pdfParse = (await import('pdf-parse')).default;
-        const pdfData = await pdfParse(file.buffer);
-        return pdfData.text;
+        console.log('📄 处理PDF文件 - 使用RAG分块服务...');
+        chunks = await callRagChunksService(file);
+        break;
       
       case 'text/plain':
-        return file.buffer.toString('utf-8');
+        console.log('📝 处理文本文件...');
+        const textContent = file.buffer.toString('utf-8');
+        console.log('✅ 文本文件处理完成');
+        console.log('- 文本长度:', textContent.length, '字符');
+        // 对于纯文本文件，创建单个分块
+        chunks = [{
+          text: textContent,
+          metadata: {
+            source: file.originalname,
+            page_number: 1,
+            section: null
+          }
+        }];
+        break;
       
       case 'application/msword':
       case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-        const result = await mammoth.extractRawText({ buffer: file.buffer });
-        return result.value;
+        console.log('📄 处理Word文档 - 使用RAG分块服务...');
+        chunks = await callRagChunksService(file);
+        break;
       
       default:
+        console.error('❌ 不支持的文件类型:', file.mimetype);
         throw new Error('不支持的文件类型');
     }
+    
+    // 对所有文件类型的分块进行标准化处理
+    const normalizedChunks = normalizeChunks(chunks);
+    
+    return normalizedChunks;
   } catch (error) {
-    console.error('文件内容提取失败:', error);
+    console.error('💥 文件内容提取异常:');
+    console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
+    console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
+    console.error('- 错误堆栈:', error instanceof Error ? error.stack : 'No stack trace');
     throw new Error('文件内容提取失败');
   }
 }
@@ -78,31 +294,111 @@ function chunkText(text: string, chunkSize: number = 1000, overlap: number = 200
 }
 
 /**
- * 模拟向量化处理（因为没有OpenAI API）
+ * 调用外部嵌入服务生成向量
  */
-function generateMockEmbedding(): number[] {
-  // 生成1536维的模拟向量（OpenAI text-embedding-ada-002的维度）
-  return Array.from({ length: 1536 }, () => Math.random() * 2 - 1);
+async function generateEmbedding(text: string): Promise<number[]> {
+  try {
+    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8001';
+    
+    console.log('🔄 调用外部嵌入服务生成向量...');
+    console.log('- 服务URL:', embeddingServiceUrl);
+    console.log('- 文本长度:', text.length, '字符');
+    
+    const response = await fetch(`${embeddingServiceUrl}/embed`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        documents: [text]
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`嵌入服务响应错误: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    
+    if (!result.embeddings || !Array.isArray(result.embeddings) || result.embeddings.length === 0) {
+      throw new Error('嵌入服务返回的数据格式无效');
+    }
+    
+    const embedding = result.embeddings[0];
+    if (!Array.isArray(embedding)) {
+      throw new Error('嵌入向量格式无效');
+    }
+    
+    console.log('✅ 向量生成成功');
+    console.log('- 向量维度:', embedding.length);
+    console.log('- 服务消息:', result.message || '无消息');
+    
+    return embedding;
+    
+  } catch (error) {
+    console.error('❌ 调用嵌入服务失败:', error);
+    console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
+    console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
+    
+    // 如果外部服务失败，回退到模拟向量
+    console.log('🔄 回退到模拟向量生成...');
+    return Array.from({ length: 768 }, () => Math.random() * 2 - 1);
+  }
 }
 
 /**
  * 上传文档
  */
 router.post('/upload', upload.single('file'), async (req, res) => {
+  const startTime = Date.now();
+  console.log('=== 文档上传请求开始 ===');
+  console.log('请求时间:', new Date().toISOString());
+  console.log('请求头:', JSON.stringify(req.headers, null, 2));
+  
   try {
     const { title, userId } = req.body;
     const file = req.file;
     
+    console.log('请求参数:');
+    console.log('- title:', title);
+    console.log('- userId:', userId);
+    console.log('- file存在:', !!file);
+    
+    if (file) {
+      console.log('文件信息:');
+      console.log('- 原始文件名:', file.originalname);
+      console.log('- MIME类型:', file.mimetype);
+      console.log('- 文件大小:', file.size, 'bytes');
+      console.log('- 缓冲区长度:', file.buffer?.length || 0);
+    }
+    
     if (!file) {
+      console.log('❌ 错误: 没有接收到文件');
       return res.status(400).json({ error: '请选择文件' });
     }
     
     if (!title || !userId) {
+      console.log('❌ 错误: 缺少必要参数');
+      console.log('- title缺失:', !title);
+      console.log('- userId缺失:', !userId);
       return res.status(400).json({ error: '缺少必要参数' });
     }
     
-    // 提取文件内容
-    const content = await extractFileContent(file);
+    console.log('✅ 参数验证通过，开始提取文件内容并分块...');
+    
+    // 提取文件内容并分块
+    const chunks = await extractFileContentAndChunks(file);
+    console.log('✅ 文件内容提取和分块成功');
+    console.log('- 分块数量:', chunks.length);
+    console.log('- 平均分块长度:', Math.round(chunks.reduce((sum, chunk) => sum + chunk.text.length, 0) / chunks.length));
+    
+    // 合并所有分块文本作为文档内容
+    const content = chunks.map(chunk => chunk.text).join('\n\n');
+    console.log('- 总内容长度:', content.length, '字符');
+    console.log('- 内容预览:', content.substring(0, 100) + (content.length > 100 ? '...' : ''));
+    
+    console.log('📝 开始保存文档到数据库...');
     
     // 保存文档到数据库
     const { data: document, error: docError } = await supabaseAdmin
@@ -119,38 +415,77 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       .single();
     
     if (docError) {
-      console.error('保存文档失败:', docError);
+      console.error('❌ 保存文档失败:', docError);
+      console.error('- 错误代码:', docError.code);
+      console.error('- 错误消息:', docError.message);
+      console.error('- 错误详情:', docError.details);
       return res.status(500).json({ error: '保存文档失败' });
     }
     
-    // 将文本分块
-    const chunks = chunkText(content);
+    console.log('✅ 文档保存成功');
+    console.log('- 文档ID:', document.id);
+    console.log('- 创建时间:', document.created_at);
+    
+    console.log('📝 开始保存文档块到数据库...');
     
     // 保存文档块到数据库
-    const chunkData = chunks.map((chunk, index) => ({
-      document_id: document.id,
-      content: chunk,
-      chunk_index: index,
-      embedding: generateMockEmbedding() // 模拟向量
-    }));
+    console.log('🔄 开始为文档块生成向量...');
+    const chunkData = [];
+    
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      console.log(`- 处理第 ${i + 1}/${chunks.length} 个文档块...`);
+      console.log(`  - 分块长度: ${chunk.text.length} 字符`);
+      console.log(`  - 来源页面: ${chunk.metadata.page_number}`);
+      console.log(`  - 章节: ${chunk.metadata.section || '无'}`);
+      
+      const embedding = await generateEmbedding(chunk.text);
+      chunkData.push({
+        document_id: document.id,
+        content: chunk.text,
+        chunk_index: i,
+        embedding: embedding,
+        metadata: JSON.stringify(chunk.metadata) // 存储元数据
+      });
+    }
+    
+    console.log('✅ 所有文档块向量生成完成');
     
     const { error: chunkError } = await supabaseAdmin
       .from('document_chunks')
       .insert(chunkData);
     
     if (chunkError) {
-      console.error('保存文档块失败:', chunkError);
+      console.error('❌ 保存文档块失败:', chunkError);
+      console.error('- 错误代码:', chunkError.code);
+      console.error('- 错误消息:', chunkError.message);
+      console.error('- 错误详情:', chunkError.details);
+      
+      console.log('🗑️ 开始清理已保存的文档...');
       // 删除已保存的文档
-      await supabaseAdmin.from('documents').delete().eq('id', document.id);
+      const { error: deleteError } = await supabaseAdmin.from('documents').delete().eq('id', document.id);
+      if (deleteError) {
+        console.error('❌ 清理文档失败:', deleteError);
+      } else {
+        console.log('✅ 文档清理成功');
+      }
+      
       return res.status(500).json({ error: '保存文档块失败' });
     }
+    
+    console.log('✅ 文档块保存成功');
+    
+    const processingTime = Date.now() - startTime;
+    console.log('🎉 文档上传完全成功!');
+    console.log('- 处理时间:', processingTime, 'ms');
+    console.log('=== 文档上传请求结束 ===\n');
     
     res.json({
       message: '文档上传成功',
       document: {
         id: document.id,
         title: document.title,
-        file_name: document.file_url,
+        file_url: document.file_url,
         file_size: document.file_size,
         file_type: document.file_type,
         created_at: document.created_at,
@@ -159,7 +494,14 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     });
     
   } catch (error) {
-    console.error('文档上传失败:', error);
+    const processingTime = Date.now() - startTime;
+    console.error('💥 文档上传发生异常:');
+    console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
+    console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
+    console.error('- 错误堆栈:', error instanceof Error ? error.stack : 'No stack trace');
+    console.error('- 处理时间:', processingTime, 'ms');
+    console.error('=== 文档上传请求异常结束 ===\n');
+    
     res.status(500).json({ error: '文档上传失败' });
   }
 });
@@ -181,7 +523,7 @@ router.post('/text', async (req, res) => {
       .insert({
         title,
         content,
-        file_name: `${title}.txt`,
+        file_url: `${title}.txt`,
         file_size: Buffer.byteLength(content, 'utf8'),
         file_type: 'text/plain',
         user_id: userId
@@ -194,16 +536,42 @@ router.post('/text', async (req, res) => {
       return res.status(500).json({ error: '保存文档失败' });
     }
     
-    // 将文本分块
-    const chunks = chunkText(content);
+    // 对于文本文档，使用手动分块（因为不需要调用外部服务）
+    const textChunks = chunkText(content);
+    
+    // 转换为统一的分块格式
+    const rawChunks: ChunkData[] = textChunks.map(chunk => ({
+      text: chunk,
+      metadata: {
+        source: `${title}.txt`,
+        page_number: 1,
+        section: null
+      }
+    }));
+    
+    // 对文本块进行标准化处理
+    const chunks = normalizeChunks(rawChunks);
     
     // 保存文档块到数据库
-    const chunkData = chunks.map((chunk, index) => ({
-      document_id: document.id,
-      content: chunk,
-      chunk_index: index,
-      embedding: generateMockEmbedding() // 模拟向量
-    }));
+    console.log('🔄 开始为文本文档块生成向量...');
+    const chunkData = [];
+    
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      console.log(`- 处理第 ${i + 1}/${chunks.length} 个文档块...`);
+      console.log(`  - 分块长度: ${chunk.text.length} 字符`);
+      
+      const embedding = await generateEmbedding(chunk.text);
+      chunkData.push({
+        document_id: document.id,
+        content: chunk.text,
+        chunk_index: i,
+        embedding: embedding,
+        metadata: JSON.stringify(chunk.metadata)
+      });
+    }
+    
+    console.log('✅ 所有文本文档块向量生成完成');
     
     const { error: chunkError } = await supabaseAdmin
       .from('document_chunks')
@@ -221,7 +589,7 @@ router.post('/text', async (req, res) => {
       document: {
         id: document.id,
         title: document.title,
-        file_name: document.file_name,
+        file_url: document.file_url,
         file_size: document.file_size,
         file_type: document.file_type,
         created_at: document.created_at,
@@ -245,13 +613,13 @@ router.get('/list/:userId', async (req, res) => {
     
     let query = supabaseAdmin
       .from('documents')
-      .select('id, title, file_name, file_size, file_type, created_at, updated_at')
+      .select('id, title, file_url, file_size, file_type, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
     // 搜索功能
     if (search) {
-      query = query.or(`title.ilike.%${search}%,file_name.ilike.%${search}%`);
+      query = query.or(`title.ilike.%${search}%,file_url.ilike.%${search}%`);
     }
     
     // 分页

@@ -82,60 +82,166 @@ const Knowledge: React.FC = () => {
    * 处理文件上传
    */
   const handleFiles = async (files: File[]) => {
-    if (!files.length || !user) return;
+    if (!files.length || !user) {
+      console.log('❌ 上传条件不满足:');
+      console.log('- 文件数量:', files.length);
+      console.log('- 用户存在:', !!user);
+      return;
+    }
+
+    console.log('=== 开始文件上传流程 ===');
+    console.log('上传时间:', new Date().toISOString());
+    console.log('文件数量:', files.length);
+    console.log('用户ID:', user.id);
+
+    // 首先测试API连接
+    console.log('🔗 测试API连接...');
+    try {
+      const healthResponse = await fetch('/api/health');
+      console.log('健康检查响应状态:', healthResponse.status);
+      if (healthResponse.ok) {
+        const healthData = await healthResponse.json();
+        console.log('✅ API连接正常:', healthData);
+      } else {
+        console.error('❌ API健康检查失败');
+        alert('API服务器连接失败，请检查服务器是否运行');
+        return;
+      }
+    } catch (healthError) {
+      console.error('💥 API连接测试失败:', healthError);
+      alert('无法连接到API服务器，请检查服务器是否运行');
+      return;
+    }
 
     setIsUploading(true);
+    
     try {
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
+        console.log(`\n📁 处理文件 ${index + 1}/${files.length}:`);
+        console.log('- 文件名:', file.name);
+        console.log('- 文件类型:', file.type);
+        console.log('- 文件大小:', file.size, 'bytes');
+        console.log('- 最后修改:', new Date(file.lastModified).toISOString());
+        
         // 验证文件类型
         const allowedTypes = ['application/pdf', 'text/plain', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
         if (!allowedTypes.includes(file.type)) {
+          console.error('❌ 文件类型不支持:', file.type);
           alert(`不支持的文件类型: ${file.name}`);
           continue;
         }
+        console.log('✅ 文件类型验证通过');
 
         // 验证文件大小 (10MB)
         if (file.size > 10 * 1024 * 1024) {
+          console.error('❌ 文件过大:', file.size, 'bytes');
           alert(`文件过大: ${file.name} (最大10MB)`);
           continue;
         }
+        console.log('✅ 文件大小验证通过');
 
+        console.log('📦 准备FormData...');
         // 上传文件到后端
         const formData = new FormData();
+        const title = file.name.replace(/\.[^/.]+$/, '');
+        
         formData.append('file', file);
-        formData.append('title', file.name.replace(/\.[^/.]+$/, ''));
+        formData.append('title', title);
         formData.append('userId', user.id);
+        
+        console.log('- 标题:', title);
+        console.log('- 用户ID:', user.id);
+        console.log('✅ FormData准备完成');
 
-        const response = await fetch('/api/documents/upload', {
-          method: 'POST',
-          body: formData
-        });
+        console.log('🚀 发送上传请求到 /api/documents/upload...');
+        const uploadStartTime = Date.now();
+        
+        try {
+          const response = await fetch('/api/documents/upload', {
+            method: 'POST',
+            body: formData
+          });
+          
+          const uploadTime = Date.now() - uploadStartTime;
+          console.log('📡 收到响应:');
+          console.log('- 状态码:', response.status);
+          console.log('- 状态文本:', response.statusText);
+          console.log('- 响应时间:', uploadTime, 'ms');
+          console.log('- Content-Type:', response.headers.get('content-type'));
 
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || '上传失败');
+          if (!response.ok) {
+            console.error('❌ 响应状态不正常');
+            
+            let errorMessage = '上传失败';
+            try {
+              const errorData = await response.json();
+              console.error('- 错误数据:', errorData);
+              errorMessage = errorData.error || errorMessage;
+            } catch (parseError) {
+              console.error('- 解析错误响应失败:', parseError);
+              const errorText = await response.text();
+              console.error('- 原始错误响应:', errorText);
+            }
+            
+            throw new Error(errorMessage);
+          }
+
+          console.log('✅ 响应状态正常，解析响应数据...');
+          const result = await response.json();
+          console.log('📄 响应数据:', result);
+          
+          if (!result.document) {
+            console.error('❌ 响应数据格式异常: 缺少document字段');
+            throw new Error('服务器响应格式异常');
+          }
+          
+          console.log('✅ 响应数据验证通过');
+          console.log('- 文档ID:', result.document.id);
+          console.log('- 文档标题:', result.document.title);
+          console.log('- 分块数量:', result.document.chunks_count);
+          
+          // 添加到文档列表
+          const newDoc: Document = {
+            id: result.document.id,
+            title: result.document.title,
+            file_path: result.document.file_url, // 修正：API返回的是 file_url
+            file_size: result.document.file_size,
+            file_type: result.document.file_type,
+            upload_date: result.document.created_at,
+            chunk_count: result.document.chunks_count
+          };
+          
+          console.log('📝 添加文档到列表:', newDoc);
+          setDocuments(prev => {
+            const updated = [...prev, newDoc];
+            console.log('✅ 文档列表已更新，当前数量:', updated.length);
+            return updated;
+          });
+          
+          console.log('🎉 文件上传成功!');
+          
+        } catch (fetchError) {
+          console.error('💥 上传请求异常:');
+          console.error('- 错误类型:', fetchError?.constructor?.name || 'Unknown');
+          console.error('- 错误消息:', fetchError instanceof Error ? fetchError.message : String(fetchError));
+          console.error('- 错误堆栈:', fetchError instanceof Error ? fetchError.stack : 'No stack trace');
+          throw fetchError;
         }
-
-        const result = await response.json();
-        
-        // 添加到文档列表
-        const newDoc: Document = {
-          id: result.document.id,
-          title: result.document.title,
-          file_path: result.document.file_name,
-          file_size: result.document.file_size,
-          file_type: result.document.file_type,
-          upload_date: result.document.created_at,
-          chunk_count: result.document.chunks_count
-        };
-        
-        setDocuments(prev => [...prev, newDoc]);
       }
+      
+      console.log('🎊 所有文件上传完成!');
+      
     } catch (error) {
-      console.error('文件上传失败:', error);
-      alert(`文件上传失败: ${error instanceof Error ? error.message : '请重试'}`);
+      console.error('💥 文件上传流程异常:');
+      console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
+      console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
+      console.error('- 错误堆栈:', error instanceof Error ? error.stack : 'No stack trace');
+      
+      const errorMessage = error instanceof Error ? error.message : '请重试';
+      alert(`文件上传失败: ${errorMessage}`);
     } finally {
       setIsUploading(false);
+      console.log('=== 文件上传流程结束 ===\n');
     }
   };
 
@@ -242,7 +348,7 @@ const Knowledge: React.FC = () => {
   /**
    * 加载用户文档列表
    */
-  const loadDocuments = async () => {
+  const loadDocuments = useCallback(async () => {
     if (!user) return;
     
     try {
@@ -257,12 +363,12 @@ const Knowledge: React.FC = () => {
       const docs: Document[] = result.documents.map((doc: any) => ({
         id: doc.id,
         title: doc.title,
-        file_path: doc.file_name,
+        file_path: doc.file_url,
         content: doc.content,
         file_size: doc.file_size,
         file_type: doc.file_type,
         upload_date: doc.created_at,
-        chunk_count: doc.chunks_count
+        chunk_count: doc.chunks_count || 0
       }));
       
       setDocuments(docs);
@@ -271,12 +377,14 @@ const Knowledge: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user?.id]); // 修复：只依赖user.id而不是整个user对象
 
   // 页面加载时获取文档列表
   useEffect(() => {
-    loadDocuments();
-  }, [user]);
+    if (user?.id) {
+      loadDocuments();
+    }
+  }, [user?.id]); // 修复：直接依赖user.id，避免依赖函数
 
   // 过滤文档
   const filteredDocuments = documents.filter(doc =>
@@ -290,6 +398,16 @@ const Knowledge: React.FC = () => {
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-gray-900">知识库管理</h1>
           <p className="text-gray-600 mt-2">上传文档或输入文本，构建您的智能知识库</p>
+          
+          {/* API测试按钮 */}
+          <div className="mt-4">
+            <button
+              onClick={testApiConnection}
+              className="bg-yellow-500 text-white px-4 py-2 rounded-lg hover:bg-yellow-600 text-sm"
+            >
+              🔗 测试API连接
+            </button>
+          </div>
         </div>
 
         {/* 上传区域 */}
@@ -455,3 +573,34 @@ const Knowledge: React.FC = () => {
 };
 
 export default Knowledge;
+
+
+  /**
+   * 测试API连接
+   */
+  const testApiConnection = async () => {
+    console.log('🔗 开始API连接测试...');
+    
+    try {
+      // 测试健康检查端点
+      console.log('📡 测试健康检查端点: /api/health');
+      const healthResponse = await fetch('/api/health');
+      console.log('健康检查响应:', {
+        status: healthResponse.status,
+        statusText: healthResponse.statusText,
+        headers: Object.fromEntries(healthResponse.headers.entries())
+      });
+      
+      if (healthResponse.ok) {
+        const healthData = await healthResponse.json();
+        console.log('✅ 健康检查成功:', healthData);
+        alert('API连接正常！');
+      } else {
+        console.error('❌ 健康检查失败');
+        alert(`API健康检查失败: ${healthResponse.status} ${healthResponse.statusText}`);
+      }
+    } catch (error) {
+      console.error('💥 API连接测试失败:', error);
+      alert(`API连接失败: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  };

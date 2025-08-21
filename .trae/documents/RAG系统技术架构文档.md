@@ -30,81 +30,94 @@ graph TD
 
 ## 2. 技术描述
 
-- **前端**: React@18 + TypeScript + Tailwind CSS@3 + Vite
-- **后端**: Supabase (PostgreSQL + 实时订阅 + 文件存储 + 向量搜索)
-- **AI服务**: OpenAI API (文本嵌入和生成)
-- **状态管理**: React Context + useState/useEffect
-- **文件处理**: react-dropzone + pdf-parse
+* **前端**: React\@18 + TypeScript + Tailwind CSS\@3 + Vite
+
+* **后端**: Supabase (PostgreSQL + 实时订阅 + 文件存储 + 向量搜索)
+
+* **AI服务**: OpenAI API (文本嵌入和生成)
+
+* **状态管理**: React Context + useState/useEffect
+
+* **文件处理**: react-dropzone + pdf-parse
 
 ## 3. 路由定义
 
-| 路由 | 用途 |
-|------|------|
-| / | 首页，展示系统介绍和快速开始 |
-| /login | 登录页面，用户身份验证 |
-| /register | 注册页面，新用户注册 |
+| 路由         | 用途                |
+| ---------- | ----------------- |
+| /          | 首页，展示系统介绍和快速开始    |
+| /login     | 登录页面，用户身份验证       |
+| /register  | 注册页面，新用户注册        |
 | /knowledge | 知识库管理页面，文件上传和文本输入 |
-| /chat | 问答页面，AI对话界面 |
-| /profile | 用户中心，个人信息和使用统计 |
+| /chat      | 问答页面，AI对话界面       |
+| /profile   | 用户中心，个人信息和使用统计    |
 
 ## 4. API定义
 
 ### 4.1 核心API
 
 **用户认证相关**
+
 ```
 POST /auth/v1/signup
 ```
 
 请求:
-| 参数名 | 参数类型 | 是否必需 | 描述 |
-|--------|----------|----------|------|
-| email | string | true | 用户邮箱 |
+
+| 参数名      | 参数类型   | 是否必需 | 描述   |
+| -------- | ------ | ---- | ---- |
+| email    | string | true | 用户邮箱 |
 | password | string | true | 用户密码 |
-| name | string | true | 用户姓名 |
+| name     | string | true | 用户姓名 |
 
 响应:
-| 参数名 | 参数类型 | 描述 |
-|--------|----------|------|
-| user | object | 用户信息对象 |
-| session | object | 会话信息 |
+
+| 参数名     | 参数类型   | 描述     |
+| ------- | ------ | ------ |
+| user    | object | 用户信息对象 |
+| session | object | 会话信息   |
 
 **文档管理相关**
+
 ```
 POST /rest/v1/documents
 ```
 
 请求:
-| 参数名 | 参数类型 | 是否必需 | 描述 |
-|--------|----------|----------|------|
-| title | string | true | 文档标题 |
-| content | string | true | 文档内容 |
-| file_url | string | false | 文件存储URL |
-| user_id | uuid | true | 用户ID |
+
+| 参数名       | 参数类型   | 是否必需  | 描述      |
+| --------- | ------ | ----- | ------- |
+| title     | string | true  | 文档标题    |
+| content   | string | true  | 文档内容    |
+| file\_url | string | false | 文件存储URL |
+| user\_id  | uuid   | true  | 用户ID    |
 
 响应:
-| 参数名 | 参数类型 | 描述 |
-|--------|----------|------|
-| id | uuid | 文档ID |
-| created_at | timestamp | 创建时间 |
+
+| 参数名         | 参数类型      | 描述   |
+| ----------- | --------- | ---- |
+| id          | uuid      | 文档ID |
+| created\_at | timestamp | 创建时间 |
 
 **问答相关**
+
 ```
 POST /rest/v1/conversations
 ```
 
 请求:
-| 参数名 | 参数类型 | 是否必需 | 描述 |
-|--------|----------|----------|------|
+
+| 参数名      | 参数类型   | 是否必需 | 描述   |
+| -------- | ------ | ---- | ---- |
 | question | string | true | 用户问题 |
-| user_id | uuid | true | 用户ID |
+| user\_id | uuid   | true | 用户ID |
 
 响应:
-| 参数名 | 参数类型 | 描述 |
-|--------|----------|------|
-| answer | string | AI生成的答案 |
-| sources | array | 相关文档来源 |
-| conversation_id | uuid | 对话ID |
+
+| 参数名              | 参数类型   | 描述      |
+| ---------------- | ------ | ------- |
+| answer           | string | AI生成的答案 |
+| sources          | array  | 相关文档来源  |
+| conversation\_id | uuid   | 对话ID    |
 
 ## 5. 服务器架构图
 
@@ -202,6 +215,7 @@ erDiagram
 ### 6.2 数据定义语言
 
 **用户表 (users)**
+
 ```sql
 -- 用户表由Supabase Auth自动创建和管理
 -- 扩展用户配置表
@@ -225,6 +239,7 @@ CREATE POLICY "用户只能更新自己的配置" ON user_profiles
 ```
 
 **文档表 (documents)**
+
 ```sql
 CREATE TABLE documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -250,7 +265,8 @@ CREATE POLICY "用户只能访问自己的文档" ON documents
     FOR ALL USING (auth.uid() = user_id);
 ```
 
-**文档块表 (document_chunks)**
+**文档块表 (document\_chunks)**
+
 ```sql
 -- 启用pgvector扩展
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -285,6 +301,7 @@ CREATE POLICY "用户只能访问自己文档的块" ON document_chunks
 ```
 
 **对话表 (conversations)**
+
 ```sql
 CREATE TABLE conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -307,6 +324,7 @@ CREATE POLICY "用户只能访问自己的对话" ON conversations
 ```
 
 **消息表 (messages)**
+
 ```sql
 CREATE TABLE messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -335,7 +353,8 @@ CREATE POLICY "用户只能访问自己对话的消息" ON messages
     );
 ```
 
-**消息来源表 (message_sources)**
+**消息来源表 (message\_sources)**
+
 ```sql
 CREATE TABLE message_sources (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -364,6 +383,7 @@ CREATE POLICY "用户只能访问自己消息的来源" ON message_sources
 ```
 
 **权限设置**
+
 ```sql
 -- 为anon角色授予基本权限
 GRANT SELECT ON user_profiles TO anon;
@@ -381,3 +401,4 @@ GRANT ALL PRIVILEGES ON conversations TO authenticated;
 GRANT ALL PRIVILEGES ON messages TO authenticated;
 GRANT ALL PRIVILEGES ON message_sources TO authenticated;
 ```
+

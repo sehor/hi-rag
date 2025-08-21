@@ -1,5 +1,5 @@
 /**
- * local server entry file, for local development
+ * Express 服务器启动文件 - 主入口
  */
 import app from './app.js';
 import { createServer } from 'http';
@@ -7,10 +7,10 @@ import { createServer } from 'http';
 
 
 /**
- * 启动服务器
+ * 启动服务器 - 重启
  */
 function startServer() {
-  const port = parseInt(process.env.PORT || '3001');
+const port = parseInt(process.env.PORT || '3001');
   
   const server = app.listen(port, () => {
     console.log(`Server ready on port ${port}`);
@@ -106,3 +106,4 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 export default app;
+

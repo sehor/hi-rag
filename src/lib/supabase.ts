@@ -1,16 +1,25 @@
 /**
  * Supabase客户端配置
  */
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../types/database';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://lmuwwbhmrczjreugcftk.supabase.co';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxtdXd3YmhtcmN6anJldWdjZnRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1NTg2ODIsImV4cCI6MjA3MTEzNDY4Mn0.nXyPI-F7NBp_xB6-AdWBKVabfRY1DNJBI1uy9MKsclA';
 
-/**
- * 创建Supabase客户端实例
- */
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
+console.log('Supabase URL:', supabaseUrl);
+
+// 单例模式，防止在开发环境中因热模块替换（HMR）而创建多个Supabase客户端实例
+const globalForSupabase = globalThis as unknown as {
+  supabase: SupabaseClient<Database> | undefined;
+};
+
+export const supabase =
+  globalForSupabase.supabase ?? createClient<Database>(supabaseUrl, supabaseAnonKey);
+
+if (import.meta.env.DEV) {
+  globalForSupabase.supabase = supabase;
+}
 
 /**
  * 获取当前用户

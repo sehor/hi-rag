@@ -26,46 +26,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * 获取用户资料
    * 如果用户资料不存在，自动创建一个
    */
-  const fetchUserProfile = async (userId: string) => {
+  const fetchUserProfile = async (user: User) => {
+    console.log('AuthContext: 开始获取用户资料...', user.id);
     try {
+      // 使用 .limit(1) 代替 .single() 来避免 406 Not Acceptable 错误
+      // .limit(1) 会返回一个数组，如果没有找到记录，则为空数组 []
       const { data, error } = await supabase
         .from('user_profiles')
         .select('*')
-        .eq('id', userId)
-        .single();
+        .eq('id', user.id)
+        .limit(1);
 
       if (error) {
-        // 如果用户资料不存在，尝试创建一个
-        if (error.code === 'PGRST116') {
-          console.log('用户资料不存在，正在创建...');
-          await createUserProfile(userId);
-          return;
-        }
-        console.error('获取用户资料失败:', error);
+        // 如果仍然出错，记录错误并退出
+        console.error('AuthContext: 获取用户资料失败:', error);
+        setUserProfile(null);
         return;
       }
 
-      setUserProfile(data);
+      // 如果查询成功但没有返回数据 (data 是空数组)，说明是新用户，需要创建资料
+      if (data && data.length === 0) {
+        console.log('AuthContext: 用户资料不存在，准备创建...');
+        await createUserProfile(user);
+        return;
+      }
+
+      // 如果查询成功并返回了数据
+      if (data && data.length > 0) {
+        console.log('AuthContext: 成功获取用户资料', data[0]);
+        setUserProfile(data[0]);
+      }
     } catch (error) {
-      console.error('获取用户资料异常:', error);
+      console.error('AuthContext: 获取用户资料时发生异常:', error);
+      setUserProfile(null);
     }
   };
 
   /**
    * 创建用户资料
    */
-  const createUserProfile = async (userId: string) => {
+  const createUserProfile = async (user: User) => {
+    console.log('AuthContext: 开始创建用户资料...', user.id);
     try {
-      // 获取用户的基本信息
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
       const name = user.user_metadata?.name || user.email?.split('@')[0] || '用户';
       
       const { data, error } = await supabase
         .from('user_profiles')
         .insert({
-          id: userId,
+          id: user.id,
           name: name,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
@@ -74,14 +82,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         .single();
 
       if (error) {
-        console.error('创建用户资料失败:', error);
+        console.error('AuthContext: 创建用户资料失败:', error);
         return;
       }
 
       setUserProfile(data);
-      console.log('用户资料创建成功');
+      console.log('AuthContext: 用户资料创建成功', data);
     } catch (error) {
-      console.error('创建用户资料异常:', error);
+      console.error('AuthContext: 创建用户资料时发生异常:', error);
     }
   };
 
@@ -90,7 +98,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    */
   const refreshProfile = async () => {
     if (user) {
-      await fetchUserProfile(user.id);
+      await fetchUserProfile(user);
     }
   };
 
@@ -108,63 +116,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
-    let timeoutId: NodeJS.Timeout;
-    
-    // 获取当前用户
-    const getCurrentUser = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        setUser(user);
-        
-        if (user) {
-          await fetchUserProfile(user.id);
-        }
-      } catch (error) {
-        console.error('获取当前用户失败:', error);
-      } finally {
+    let isMounted = true;
+    setLoading(true);
+    console.log('AuthContext: useEffect挂载，开始认证检查...');
+
+    // 设置30秒超时，防止认证过程无限加载
+    const timeoutId = setTimeout(() => {
+      if (isMounted) {
+        console.warn('认证检查超时 (30秒)，强制设置loading为false');
         setLoading(false);
       }
-    };
+    }, 30000);
 
-    // 设置超时机制，防止无限加载
-    timeoutId = setTimeout(() => {
-      console.warn('认证检查超时，强制设置loading为false');
-      setLoading(false);
-    }, 10000); // 10秒超时
-
-    getCurrentUser();
-
-    // 监听认证状态变化
+    // 监听认证状态变化，它会在监听器附加时立即触发一次
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        // 清除超时定时器
-        if (timeoutId) {
-          clearTimeout(timeoutId);
+      (event, session) => { // 注意：这里移除了 async
+        console.log('AuthContext: onAuthStateChange触发', { event, session });
+        if (!isMounted) {
+          console.log('AuthContext: 组件已卸载，跳过状态更新');
+          return;
         }
-        
-        setUser(session?.user ?? null);
-        
-        if (session?.user) {
-          try {
-            await fetchUserProfile(session.user.id);
-          } catch (error) {
-            console.error('获取用户资料失败:', error);
+
+        try {
+          const user = session?.user ?? null;
+          setUser(user);
+          if (user) {
+            // 在后台获取用户资料，不使用 await，不阻塞主认证流程
+            fetchUserProfile(user);
+          } else {
+            console.log('AuthContext: 用户未登录，设置userProfile为null');
+            setUserProfile(null);
           }
-        } else {
-          setUserProfile(null);
+        } catch (error) {
+          console.error('处理认证状态变化时出错:', error);
+        } finally {
+          // 只要收到onAuthStateChange的回调，就认为核心认证完成
+          if (isMounted) {
+            console.log('AuthContext: 核心认证流程结束，清除超时并设置loading为false');
+            clearTimeout(timeoutId);
+            setLoading(false);
+          }
         }
-        
-        setLoading(false);
       }
     );
 
+    // 清理函数
     return () => {
-       subscription.unsubscribe();
-       if (timeoutId) {
-         clearTimeout(timeoutId);
-       }
-     };
-   }, []);
+      console.log('AuthContext: useEffect清理，取消订阅');
+      isMounted = false;
+      subscription.unsubscribe();
+      clearTimeout(timeoutId);
+    };
+  }, []);
 
   const value = {
     user,
