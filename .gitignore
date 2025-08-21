@@ -23,3 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 .vite
+# Local environment variables
+.env
+.env.*
+!/.env.example
+.env.test
