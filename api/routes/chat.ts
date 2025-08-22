@@ -38,6 +38,7 @@ async function generateQueryEmbedding(query: string): Promise<number[]> {
     console.log('- 服务URL:', embeddingServiceUrl);
     console.log('- 查询文本:', query);
     
+    // 直接使用原始查询文本，不添加指令前缀，保持与文档向量生成的一致性
     const response = await fetch(`${embeddingServiceUrl}/embed`, {
       method: 'POST',
       headers: {
@@ -75,7 +76,7 @@ async function generateQueryEmbedding(query: string): Promise<number[]> {
     console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
     console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
     
-    // 修改1: 嵌入服务失败时直接抛出错误，不使用随机向量
+    // 嵌入服务失败时直接抛出错误，不使用随机模拟向量
     throw new Error(`嵌入服务失败: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
@@ -241,15 +242,16 @@ function diversityRerank(chunks: any[], queryEmbedding: number[], lambda: number
  * 提取查询中的关键词
  */
 function extractKeywords(query: string): string[] {
-  // 简单的关键词提取：去除停用词，保留有意义的词汇
-  const stopWords = new Set(['的', '了', '在', '是', '我', '你', '他', '她', '它', '们', '这', '那', '有', '和', '与', '或', '但', '如果', '因为', '所以', '什么', '怎么', '为什么', '哪里', '什么时候', '谁', '如何']);
-  
-  return query
+  // 移除标点符号，转换为小写，分割成词汇
+  const words = query
     .toLowerCase()
-    .replace(/[^\w\s\u4e00-\u9fff]/g, '') // 保留中英文字符
+    .replace(/[^\w\s\u4e00-\u9fa5]/g, '') // 保留中文字符
     .split(/\s+/)
-    .filter(word => word.length > 1 && !stopWords.has(word))
-    .slice(0, 5); // 最多取5个关键词
+    .filter(word => word.length > 1); // 过滤单字符
+  
+  // 移除常见停用词
+  const stopWords = new Set(['的', '是', '在', '有', '和', '与', '或', '但', '而', '了', '吗', '呢', '啊', '哪', '什么', '怎么', '为什么']);
+  return words.filter(word => !stopWords.has(word));
 }
 
 /**
@@ -259,12 +261,15 @@ function validateKeywordMatch(content: string, keywords: string[]): boolean {
   if (keywords.length === 0) return true;
   
   const contentLower = content.toLowerCase();
-  const matchedKeywords = keywords.filter(keyword => 
-    contentLower.includes(keyword.toLowerCase())
-  );
-  
   // 至少匹配一个关键词
-  return matchedKeywords.length > 0;
+  const matchCount = keywords.filter(keyword => 
+    contentLower.includes(keyword.toLowerCase())
+  ).length;
+  
+  // 对于短查询（<=3个关键词），至少匹配1个
+  // 对于长查询（>3个关键词），至少匹配30%
+  const requiredMatches = keywords.length <= 3 ? 1 : Math.ceil(keywords.length * 0.3);
+  return matchCount >= requiredMatches;
 }
 
 /**
@@ -272,17 +277,14 @@ function validateKeywordMatch(content: string, keywords: string[]): boolean {
  */
 async function searchRelevantChunks(query: string, userId: string, limit: number = 5, categoryId?: string) {
   console.log('🔍 开始向量搜索相关文档块...');
-  console.log('- 原始查询:', query);
   console.log('- 用户ID:', userId);
-  console.log('- 分类ID:', categoryId); // 添加分类ID日志
+  console.log('- 分类ID:', categoryId);
   
   // 提取查询关键词
   const keywords = extractKeywords(query);
-  console.log('🔑 提取的关键词:', keywords);
   
   try {
     // 生成查询向量
-    console.log('🧮 生成查询向量...');
     const queryEmbedding = await generateQueryEmbedding(query);
     
     if (!queryEmbedding || queryEmbedding.length === 0) {
@@ -300,49 +302,46 @@ async function searchRelevantChunks(query: string, userId: string, limit: number
     const { data: chunks, error } = await supabaseAdmin
       .rpc('search_similar_chunks_with_category', {
         query_embedding: queryEmbedding,
-        target_user_id: userId, // 直接传递UUID，不需要toString()
-        match_threshold: 0.6, // 修改3: 提高相似度阈值到0.6
+        target_user_id: userId,
+        match_threshold: 0.3,
         match_count: searchLimit,
-        category_filter: categoryId || null // 添加分类过滤参数
+        category_filter: categoryId || null
       });
     
     if (error) {
       console.error('❌ 向量搜索失败:', error);
-      // 如果向量搜索失败，回退到关键字搜索
       console.log('🔄 回退到关键字搜索...');
       return await fallbackKeywordSearch(query, userId, limit, categoryId);
     }
     
     console.log(`✅ 向量搜索找到 ${chunks?.length || 0} 个相关文档块`);
     
-    // 如果向量搜索没有找到结果，回退到关键字搜索
     if (!chunks || chunks.length === 0) {
       console.log('🔄 向量搜索无结果，回退到关键字搜索...');
       return await fallbackKeywordSearch(query, userId, limit, categoryId);
     }
     
-    // 记录原始相似度分数
+    // 只记录相似度分数，不打印文档内容
     chunks.forEach((chunk: any, index: number) => {
       console.log(`📊 文档块 ${index + 1}: 相似度 ${chunk.similarity?.toFixed(4) || 'N/A'}`);
     });
     
-    // 修改2: 重新启用关键词验证，但失败后保留向量搜索结果
+    // 关键词验证
     const keywordFilteredChunks = chunks.filter(chunk => 
       validateKeywordMatch(chunk.content, keywords)
     );
     console.log(`🔑 关键词验证后保留 ${keywordFilteredChunks.length} 个文档块`);
     
-    // 如果关键词验证后没有结果，保留原始向量搜索结果
     const finalChunks = keywordFilteredChunks.length > 0 ? keywordFilteredChunks : chunks;
-    console.log(`📋 最终使用 ${finalChunks.length} 个文档块 (${keywordFilteredChunks.length > 0 ? '关键词验证通过' : '保留向量搜索结果'})`);
+    console.log(`📋 最终使用 ${finalChunks.length} 个文档块`);
     
-    // 修改4: 暂时禁用多样性重排序算法，直接返回向量搜索结果
-    const rerankedChunks = finalChunks.slice(0, limit); // 直接截取前N个结果，不进行重排序
-    console.log('⚠️ 多样性重排序已禁用，直接使用向量搜索结果');
+    // 启用多样性重排序算法
+    const rerankedChunks = diversityRerank(finalChunks, queryEmbedding, 0.7, limit);
+    console.log('✅ 多样性重排序已启用');
     
     console.log('🎯 重排序后的结果:');
     rerankedChunks.forEach((chunk: any, index: number) => {
-      console.log(`📋 排序 ${index + 1}: 相似度 ${chunk.similarity?.toFixed(4) || 'N/A'}, 文档: ${chunk.documents?.title || 'Unknown'}`);
+      console.log(`📋 排序 ${index + 1}: 相似度 ${chunk.similarity?.toFixed(4) || 'N/A'}`);
     });
     
     return rerankedChunks;
@@ -412,7 +411,6 @@ router.post('/completions', async (req: Request, res: Response) => {
     
     console.log('请求参数:');
     console.log('- model:', model);
-    console.log('- conversationId:', conversationId);
     console.log('- userId:', userId);
     console.log('- categoryId:', categoryId);
     console.log('- messages数量:', messages?.length || 0);
@@ -466,6 +464,8 @@ router.post('/completions', async (req: Request, res: Response) => {
       });
     }
     
+    // 在/completions路由中，找到这些行并修改：
+    
     // 构建上下文
     let contextText = '';
     const sources: string[] = [];
@@ -478,25 +478,22 @@ router.post('/completions', async (req: Request, res: Response) => {
     
     console.log('- 上下文长度:', contextText.length);
     console.log('- 来源文档:', sources);
-    console.log('📄 RAG上下文内容:');
-    console.log('='.repeat(50));
-    console.log(contextText);
-    console.log('='.repeat(50));
+    // 移除这些行：
+    // console.log('📄 RAG上下文内容:');
+    // console.log('='.repeat(50));
+    // console.log(contextText);
+    // console.log('='.repeat(50));
     
     // 构建系统提示词
     const systemPrompt = contextText 
-      ? `你是一个智能助手，请基于以下提供的文档内容来回答用户的问题。如果文档中没有相关信息，请明确说明。
-
-相关文档内容：
-${contextText}
-
-请根据上述文档内容回答用户的问题，并在回答中引用具体的文档来源。`
+      ? `你是一个智能助手，请基于以下提供的文档内容来回答用户的问题。如果文档中没有相关信息，请明确说明。\n\n相关文档内容：\n${contextText}\n\n请根据上述文档内容回答用户的问题，并在回答中引用具体的文档来源。`
       : '你是一个智能助手，请友好地回答用户的问题。';
     
-    console.log('🎯 系统提示词:');
-    console.log('='.repeat(50));
-    console.log(systemPrompt);
-    console.log('='.repeat(50));
+    // 移除这些行：
+    // console.log('🎯 系统提示词:');
+    // console.log('='.repeat(50));
+    // console.log(systemPrompt);
+    // console.log('='.repeat(50));
     
     // 构建完整的消息数组
     const fullMessages: ChatMessage[] = [
@@ -504,14 +501,15 @@ ${contextText}
       ...messages
     ];
     
-    console.log('📨 发送给LLM的完整消息:');
-    console.log('='.repeat(50));
-    fullMessages.forEach((msg, index) => {
-      console.log(`消息 ${index + 1} [${msg.role}]:`);
-      console.log(msg.content);
-      console.log('-'.repeat(30));
-    });
-    console.log('='.repeat(50));
+    // 移除这些行：
+    // console.log('📨 发送给LLM的完整消息:');
+    // console.log('='.repeat(50));
+    // fullMessages.forEach((msg, index) => {
+    //   console.log(`消息 ${index + 1} [${msg.role}]:`);
+    //   console.log(msg.content);
+    //   console.log('-'.repeat(30));
+    // });
+    // console.log('='.repeat(50));
     
     // 验证环境变量
     const openrouterApiKey = process.env.OPENROUTER_API_KEY;
