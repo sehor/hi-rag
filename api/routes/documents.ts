@@ -357,12 +357,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   console.log('请求头:', JSON.stringify(req.headers, null, 2));
   
   try {
-    const { title, userId } = req.body;
+    const { title, userId, categoryId } = req.body;
     const file = req.file;
     
     console.log('请求参数:');
     console.log('- title:', title);
     console.log('- userId:', userId);
+    console.log('- categoryId:', categoryId);
     console.log('- file存在:', !!file);
     
     if (file) {
@@ -409,7 +410,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         file_url: file.originalname,
         file_size: file.size,
         file_type: file.mimetype,
-        user_id: userId
+        user_id: userId,
+        category_id: categoryId || null
       })
       .select()
       .single();
@@ -511,7 +513,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
  */
 router.post('/text', async (req, res) => {
   try {
-    const { title, content, userId } = req.body;
+    const { title, content, userId, categoryId } = req.body;
     
     if (!title || !content || !userId) {
       return res.status(400).json({ error: '缺少必要参数' });
@@ -526,7 +528,8 @@ router.post('/text', async (req, res) => {
         file_url: `${title}.txt`,
         file_size: Buffer.byteLength(content, 'utf8'),
         file_type: 'text/plain',
-        user_id: userId
+        user_id: userId,
+        category_id: categoryId || null
       })
       .select()
       .single();
@@ -609,17 +612,22 @@ router.post('/text', async (req, res) => {
 router.get('/list/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { page = 1, limit = 10, search = '' } = req.query;
+    const { page = 1, limit = 10, search = '', categoryId = '' } = req.query;
     
     let query = supabaseAdmin
       .from('documents')
-      .select('id, title, file_url, file_size, file_type, created_at, updated_at')
+      .select('id, title, file_url, file_size, file_type, category_id, created_at, updated_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
     // 搜索功能
     if (search) {
       query = query.or(`title.ilike.%${search}%,file_url.ilike.%${search}%`);
+    }
+    
+    // 分类过滤
+    if (categoryId) {
+      query = query.eq('category_id', categoryId);
     }
     
     // 分页
@@ -741,6 +749,124 @@ router.get('/:documentId', async (req, res) => {
   } catch (error) {
     console.error('获取文档详情失败:', error);
     res.status(500).json({ error: '获取文档详情失败' });
+  }
+});
+
+/**
+ * 获取用户分类列表
+ */
+router.get('/categories/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    const { data: categories, error } = await supabaseAdmin
+      .from('categories')
+      .select('id, name, description, created_at')
+      .or(`user_id.eq.${userId},user_id.is.null`)
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('获取分类列表失败:', error);
+      return res.status(500).json({ error: '获取分类列表失败' });
+    }
+    
+    res.json({ categories: categories || [] });
+    
+  } catch (error) {
+    console.error('获取分类列表失败:', error);
+    res.status(500).json({ error: '获取分类列表失败' });
+  }
+});
+
+/**
+ * 创建新分类
+ */
+router.post('/categories', async (req, res) => {
+  try {
+    const { name, description, userId } = req.body;
+    
+    if (!name || !userId) {
+      return res.status(400).json({ error: '缺少必要参数' });
+    }
+    
+    const { data: category, error } = await supabaseAdmin
+      .from('categories')
+      .insert({
+        name,
+        description: description || null,
+        user_id: userId
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('创建分类失败:', error);
+      return res.status(500).json({ error: '创建分类失败' });
+    }
+    
+    res.json({
+      message: '分类创建成功',
+      category
+    });
+    
+  } catch (error) {
+    console.error('创建分类失败:', error);
+    res.status(500).json({ error: '创建分类失败' });
+  }
+});
+
+/**
+ * 删除分类
+ */
+router.delete('/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: '缺少用户ID' });
+    }
+    
+    // 验证分类所有权
+    const { data: category, error: categoryError } = await supabaseAdmin
+      .from('categories')
+      .select('id, user_id')
+      .eq('id', categoryId)
+      .eq('user_id', userId)
+      .single();
+    
+    if (categoryError || !category) {
+      return res.status(404).json({ error: '分类不存在或无权限' });
+    }
+    
+    // 将使用此分类的文档的category_id设为null
+    const { error: updateError } = await supabaseAdmin
+      .from('documents')
+      .update({ category_id: null })
+      .eq('category_id', categoryId)
+      .eq('user_id', userId);
+    
+    if (updateError) {
+      console.error('更新文档分类失败:', updateError);
+      return res.status(500).json({ error: '更新文档分类失败' });
+    }
+    
+    // 删除分类
+    const { error: deleteError } = await supabaseAdmin
+      .from('categories')
+      .delete()
+      .eq('id', categoryId);
+    
+    if (deleteError) {
+      console.error('删除分类失败:', deleteError);
+      return res.status(500).json({ error: '删除分类失败' });
+    }
+    
+    res.json({ message: '分类删除成功' });
+    
+  } catch (error) {
+    console.error('删除分类失败:', error);
+    res.status(500).json({ error: '删除分类失败' });
   }
 });
 

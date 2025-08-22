@@ -25,6 +25,17 @@ interface Conversation {
 }
 
 /**
+ * 分类接口定义
+ */
+interface Category {
+  id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  user_id?: string;
+}
+
+/**
  * AI问答页面组件
  * 包含对话界面、历史记录和消息管理
  */
@@ -38,6 +49,8 @@ const Chat: React.FC = () => {
   const [showHistory, setShowHistory] = useState(false);
   const [selectedModel, setSelectedModel] = useState('openai/gpt-5-mini'); // 设置默认模型为GPT-5 Mini
   const [availableModels, setAvailableModels] = useState<Array<{id: string, name: string, provider: string}>>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -107,9 +120,34 @@ const Chat: React.FC = () => {
     }
   };
 
+  /**
+   * 加载分类列表
+   */
+  const loadCategories = async () => {
+    if (!user) return;
+    
+    try {
+      const response = await fetch(`/api/documents/categories/${user.id}`);
+      if (response.ok) {
+        const result = await response.json();
+        setCategories(result.categories || []); // 修复：使用 result.categories
+      }
+    } catch (error) {
+      console.error('加载分类列表失败:', error);
+    }
+  };
+
+  // 加载模型列表（只执行一次）
   useEffect(() => {
     loadModels();
   }, []);
+  
+  // 加载分类列表（当用户ID变化时执行）
+  useEffect(() => {
+    if (user?.id) {
+      loadCategories();
+    }
+  }, [user?.id]);
 
   /**
    * 发送消息
@@ -150,7 +188,8 @@ const Chat: React.FC = () => {
           messages: chatMessages,
           model: selectedModel,
           conversationId: currentConversation,
-          userId: user.id // 添加用户ID
+          userId: user.id, // 添加用户ID
+          categoryId: selectedCategoryId || undefined
         })
       });
 
@@ -304,6 +343,23 @@ const Chat: React.FC = () => {
                   {availableModels.map((model) => (
                     <option key={model.id} value={model.id}>
                       {model.name} ({model.provider})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              
+              {/* 知识类型选择器 */}
+              <div className="flex items-center space-x-2">
+                <label className="text-sm text-gray-600">知识类型:</label>
+                <select
+                  value={selectedCategoryId}
+                  onChange={(e) => setSelectedCategoryId(e.target.value)}
+                  className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">全部类型</option>
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
                     </option>
                   ))}
                 </select>

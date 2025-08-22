@@ -8,6 +8,7 @@ import Register from './pages/Register';
 import Knowledge from './pages/Knowledge';
 import Chat from './pages/Chat';
 import Profile from './pages/Profile';
+import { Toaster } from 'sonner';
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
       <Router>
         <div className="App min-h-screen bg-gray-50">
           <Navbar />
+          <Toaster position="top-right" richColors />
           <Routes>
             {/* 公开路由 */}
             <Route path="/login" element={<Login />} />

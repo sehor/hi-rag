@@ -24,6 +24,7 @@ interface ChatRequest {
   model?: string;
   conversationId?: string;
   userId: string;
+  categoryId?: string;
 }
 
 /**
@@ -74,9 +75,8 @@ async function generateQueryEmbedding(query: string): Promise<number[]> {
     console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
     console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
     
-    // 如果外部服务失败，回退到模拟向量
-    console.log('🔄 回退到模拟查询向量生成...');
-    return Array.from({ length: 768 }, () => Math.random() * 2 - 1);
+    // 修改1: 嵌入服务失败时直接抛出错误，不使用随机向量
+    throw new Error(`嵌入服务失败: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -238,12 +238,47 @@ function diversityRerank(chunks: any[], queryEmbedding: number[], lambda: number
 }
 
 /**
+ * 提取查询中的关键词
+ */
+function extractKeywords(query: string): string[] {
+  // 简单的关键词提取：去除停用词，保留有意义的词汇
+  const stopWords = new Set(['的', '了', '在', '是', '我', '你', '他', '她', '它', '们', '这', '那', '有', '和', '与', '或', '但', '如果', '因为', '所以', '什么', '怎么', '为什么', '哪里', '什么时候', '谁', '如何']);
+  
+  return query
+    .toLowerCase()
+    .replace(/[^\w\s\u4e00-\u9fff]/g, '') // 保留中英文字符
+    .split(/\s+/)
+    .filter(word => word.length > 1 && !stopWords.has(word))
+    .slice(0, 5); // 最多取5个关键词
+}
+
+/**
+ * 验证文档块是否包含查询关键词
+ */
+function validateKeywordMatch(content: string, keywords: string[]): boolean {
+  if (keywords.length === 0) return true;
+  
+  const contentLower = content.toLowerCase();
+  const matchedKeywords = keywords.filter(keyword => 
+    contentLower.includes(keyword.toLowerCase())
+  );
+  
+  // 至少匹配一个关键词
+  return matchedKeywords.length > 0;
+}
+
+/**
  * 使用向量相似度搜索相关文档块
  */
-async function searchRelevantChunks(query: string, userId: string, limit: number = 5) {
+async function searchRelevantChunks(query: string, userId: string, limit: number = 5, categoryId?: string) {
   console.log('🔍 开始向量搜索相关文档块...');
   console.log('- 原始查询:', query);
   console.log('- 用户ID:', userId);
+  console.log('- 分类ID:', categoryId); // 添加分类ID日志
+  
+  // 提取查询关键词
+  const keywords = extractKeywords(query);
+  console.log('🔑 提取的关键词:', keywords);
   
   try {
     // 生成查询向量
@@ -263,18 +298,19 @@ async function searchRelevantChunks(query: string, userId: string, limit: number
     const searchLimit = Math.max(limit * 3, 15); // 搜索3倍数量用于重排序
     
     const { data: chunks, error } = await supabaseAdmin
-      .rpc('search_similar_chunks', {
+      .rpc('search_similar_chunks_with_category', {
         query_embedding: queryEmbedding,
         target_user_id: userId, // 直接传递UUID，不需要toString()
-        match_threshold: 0.3, // 相似度阈值
-        match_count: searchLimit
+        match_threshold: 0.6, // 修改3: 提高相似度阈值到0.6
+        match_count: searchLimit,
+        category_filter: categoryId || null // 添加分类过滤参数
       });
     
     if (error) {
       console.error('❌ 向量搜索失败:', error);
       // 如果向量搜索失败，回退到关键字搜索
       console.log('🔄 回退到关键字搜索...');
-      return await fallbackKeywordSearch(query, userId, limit);
+      return await fallbackKeywordSearch(query, userId, limit, categoryId);
     }
     
     console.log(`✅ 向量搜索找到 ${chunks?.length || 0} 个相关文档块`);
@@ -282,7 +318,7 @@ async function searchRelevantChunks(query: string, userId: string, limit: number
     // 如果向量搜索没有找到结果，回退到关键字搜索
     if (!chunks || chunks.length === 0) {
       console.log('🔄 向量搜索无结果，回退到关键字搜索...');
-      return await fallbackKeywordSearch(query, userId, limit);
+      return await fallbackKeywordSearch(query, userId, limit, categoryId);
     }
     
     // 记录原始相似度分数
@@ -290,8 +326,19 @@ async function searchRelevantChunks(query: string, userId: string, limit: number
       console.log(`📊 文档块 ${index + 1}: 相似度 ${chunk.similarity?.toFixed(4) || 'N/A'}`);
     });
     
-    // 应用多样性重排序算法
-    const rerankedChunks = diversityRerank(chunks, queryEmbedding, 0.7, limit);
+    // 修改2: 重新启用关键词验证，但失败后保留向量搜索结果
+    const keywordFilteredChunks = chunks.filter(chunk => 
+      validateKeywordMatch(chunk.content, keywords)
+    );
+    console.log(`🔑 关键词验证后保留 ${keywordFilteredChunks.length} 个文档块`);
+    
+    // 如果关键词验证后没有结果，保留原始向量搜索结果
+    const finalChunks = keywordFilteredChunks.length > 0 ? keywordFilteredChunks : chunks;
+    console.log(`📋 最终使用 ${finalChunks.length} 个文档块 (${keywordFilteredChunks.length > 0 ? '关键词验证通过' : '保留向量搜索结果'})`);
+    
+    // 修改4: 暂时禁用多样性重排序算法，直接返回向量搜索结果
+    const rerankedChunks = finalChunks.slice(0, limit); // 直接截取前N个结果，不进行重排序
+    console.log('⚠️ 多样性重排序已禁用，直接使用向量搜索结果');
     
     console.log('🎯 重排序后的结果:');
     rerankedChunks.forEach((chunk: any, index: number) => {
@@ -303,19 +350,19 @@ async function searchRelevantChunks(query: string, userId: string, limit: number
   } catch (error) {
     console.error('💥 向量搜索错误:', error);
     console.log('🔄 回退到关键字搜索...');
-    return await fallbackKeywordSearch(query, userId, limit);
+    return await fallbackKeywordSearch(query, userId, limit, categoryId);
   }
 }
 
 /**
  * 关键字搜索回退方案
  */
-async function fallbackKeywordSearch(query: string, userId: string, limit: number = 5) {
+async function fallbackKeywordSearch(query: string, userId: string, limit: number = 5, categoryId?: string) {
   console.log('🔍 执行关键字搜索回退方案...');
   
   try {
     // 直接搜索原始查询
-    let { data: chunks, error } = await supabaseAdmin
+    let queryBuilder = supabaseAdmin
       .from('document_chunks')
       .select(`
         id,
@@ -324,12 +371,19 @@ async function fallbackKeywordSearch(query: string, userId: string, limit: numbe
         documents!inner(
           id,
           title,
-          user_id
+          user_id,
+          category_id
         )
       `)
       .eq('documents.user_id', userId)
-      .ilike('content', `%${query}%`)
-      .limit(limit);
+      .ilike('content', `%${query}%`);
+    
+    // 如果指定了分类，添加分类过滤
+    if (categoryId) {
+      queryBuilder = queryBuilder.eq('documents.category_id', categoryId);
+    }
+    
+    const { data: chunks, error } = await queryBuilder.limit(limit);
     
     if (error) {
       console.error('❌ 关键字搜索失败:', error);
@@ -354,12 +408,13 @@ router.post('/completions', async (req: Request, res: Response) => {
   console.log('请求时间:', new Date().toISOString());
   
   try {
-    const { messages, model = 'openai/gpt-4o', conversationId, userId }: ChatRequest = req.body;
+    const { messages, model = 'openai/gpt-4o', conversationId, userId, categoryId }: ChatRequest = req.body;
     
     console.log('请求参数:');
     console.log('- model:', model);
     console.log('- conversationId:', conversationId);
     console.log('- userId:', userId);
+    console.log('- categoryId:', categoryId);
     console.log('- messages数量:', messages?.length || 0);
     
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -391,7 +446,7 @@ router.post('/completions', async (req: Request, res: Response) => {
     // 搜索相关文档块 - 如果失败直接返回错误
     let relevantChunks;
     try {
-      relevantChunks = await searchRelevantChunks(lastUserMessage.content, userId);
+      relevantChunks = await searchRelevantChunks(lastUserMessage.content, userId, 5, categoryId);
     } catch (searchError) {
       console.error('❌ 文档搜索失败，停止处理:', searchError);
       return res.status(500).json({

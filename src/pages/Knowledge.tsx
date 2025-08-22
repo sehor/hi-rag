@@ -1,6 +1,18 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Upload, FileText, Trash2, Eye, Download, Plus, Search } from 'lucide-react';
+import { Upload, FileText, Trash2, Eye, Download, Plus, Search, FolderPlus } from 'lucide-react';
+import { toast } from 'sonner';
+
+/**
+ * 分类接口定义
+ */
+interface Category {
+  id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  user_id?: string;
+}
 
 /**
  * 文档接口定义
@@ -14,6 +26,7 @@ interface Document {
   file_type: string;
   upload_date: string;
   chunk_count: number;
+  category_id?: string;
 }
 
 /**
@@ -23,12 +36,17 @@ interface Document {
 const Knowledge: React.FC = () => {
   const { user } = useAuth();
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [dragActive, setDragActive] = useState(false);
   const [showTextInput, setShowTextInput] = useState(false);
+  const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [textContent, setTextContent] = useState('');
   const [textTitle, setTextTitle] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategoryDescription, setNewCategoryDescription] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -148,6 +166,9 @@ const Knowledge: React.FC = () => {
         formData.append('file', file);
         formData.append('title', title);
         formData.append('userId', user.id);
+        if (selectedCategoryId) {
+          formData.append('categoryId', selectedCategoryId);
+        }
         
         console.log('- 标题:', title);
         console.log('- 用户ID:', user.id);
@@ -263,7 +284,8 @@ const Knowledge: React.FC = () => {
         body: JSON.stringify({
           title: textTitle,
           content: textContent,
-          userId: user.id
+          userId: user.id,
+          categoryId: selectedCategoryId || null
         })
       });
 
@@ -346,6 +368,26 @@ const Knowledge: React.FC = () => {
   };
 
   /**
+   * 加载分类列表
+   */
+  const loadCategories = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      const response = await fetch(`/api/documents/categories/${user.id}`);
+      
+      if (!response.ok) {
+        throw new Error('获取分类列表失败');
+      }
+      
+      const result = await response.json();
+      setCategories(result.categories || []);
+    } catch (error) {
+      console.error('加载分类列表失败:', error);
+    }
+  }, [user?.id]);
+
+  /**
    * 加载用户文档列表
    */
   const loadDocuments = useCallback(async () => {
@@ -353,7 +395,12 @@ const Knowledge: React.FC = () => {
     
     try {
       setIsLoading(true);
-      const response = await fetch(`/api/documents/list/${user.id}`);
+      const params = new URLSearchParams();
+      if (selectedCategoryId) {
+        params.append('categoryId', selectedCategoryId);
+      }
+      
+      const response = await fetch(`/api/documents/list/${user.id}?${params}`);
       
       if (!response.ok) {
         throw new Error('获取文档列表失败');
@@ -368,7 +415,8 @@ const Knowledge: React.FC = () => {
         file_size: doc.file_size,
         file_type: doc.file_type,
         upload_date: doc.created_at,
-        chunk_count: doc.chunks_count || 0
+        chunk_count: doc.chunks_count || 0,
+        category_id: doc.category_id
       }));
       
       setDocuments(docs);
@@ -377,14 +425,87 @@ const Knowledge: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [user?.id]); // 修复：只依赖user.id而不是整个user对象
+  }, [user?.id, selectedCategoryId]); // 修复：只依赖user.id而不是整个user对象
 
-  // 页面加载时获取文档列表
-  useEffect(() => {
-    if (user?.id) {
-      loadDocuments();
+  /**
+   * 创建新分类
+   */
+  const createCategory = async () => {
+    if (!user || !newCategoryName.trim()) return;
+    
+    try {
+      const response = await fetch('/api/documents/categories', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: newCategoryName.trim(),
+          description: newCategoryDescription.trim() || null,
+          userId: user.id
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error('创建分类失败');
+      }
+      
+      // 重新加载分类列表
+      await loadCategories();
+      
+      // 清空表单
+      setNewCategoryName('');
+      setNewCategoryDescription('');
+      setShowCategoryModal(false);
+      
+      toast.success('分类创建成功');
+    } catch (error) {
+      console.error('创建分类失败:', error);
+      toast.error('创建分类失败');
     }
-  }, [user?.id]); // 修复：直接依赖user.id，避免依赖函数
+  };
+
+  /**
+   * 删除分类
+   */
+  const deleteCategory = async (categoryId: string) => {
+    if (!user) return;
+    
+    try {
+      const response = await fetch(`/api/documents/categories/${categoryId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) {
+        throw new Error('删除分类失败');
+      }
+      
+      // 重新加载分类列表和文档列表
+      await loadCategories();
+      await loadDocuments();
+      
+      // 如果删除的是当前选中的分类，清空选择
+      if (selectedCategoryId === categoryId) {
+        setSelectedCategoryId('');
+      }
+      
+      toast.success('分类删除成功');
+    } catch (error) {
+      console.error('删除分类失败:', error);
+      toast.error('删除分类失败');
+    }
+  };
+
+  // 页面加载时获取文档列表和分类列表
+  useEffect(() => {
+    loadDocuments();
+    loadCategories();
+  }, [loadDocuments, loadCategories]);
+
+  // 当选中分类改变时重新加载文档
+  useEffect(() => {
+    loadDocuments();
+  }, [selectedCategoryId]);
 
   // 过滤文档
   const filteredDocuments = documents.filter(doc =>
@@ -502,23 +623,126 @@ const Knowledge: React.FC = () => {
           </div>
         )}
 
+        {/* 搜索栏和分类选择器 */}
+        <div className="mb-6 space-y-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input
+              type="text"
+              placeholder="搜索文档..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          
+          {/* 分类选择器 */}
+          <div className="flex items-center gap-4">
+            <select
+              value={selectedCategoryId}
+              onChange={(e) => setSelectedCategoryId(e.target.value)}
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="">所有分类</option>
+              {categories.map((category) => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+            
+            <button
+              onClick={() => setShowCategoryModal(true)}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+            >
+              <FolderPlus className="w-4 h-4" />
+              管理分类
+            </button>
+          </div>
+        </div>
+
+        {/* 分类管理模态框 */}
+        {showCategoryModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold mb-4">分类管理</h3>
+              
+              {/* 创建新分类 */}
+              <div className="mb-6">
+                <h4 className="text-md font-medium mb-2">创建新分类</h4>
+                <input
+                  type="text"
+                  placeholder="分类名称"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  className="w-full p-3 border border-gray-300 rounded-lg mb-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <textarea
+                  placeholder="分类描述（可选）"
+                  value={newCategoryDescription}
+                  onChange={(e) => setNewCategoryDescription(e.target.value)}
+                  rows={2}
+                  className="w-full p-3 border border-gray-300 rounded-lg mb-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  onClick={createCategory}
+                  disabled={!newCategoryName.trim()}
+                  className="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  创建分类
+                </button>
+              </div>
+              
+              {/* 现有分类列表 */}
+              <div className="mb-4">
+                <h4 className="text-md font-medium mb-2">现有分类</h4>
+                <div className="max-h-40 overflow-y-auto">
+                  {categories.length === 0 ? (
+                    <p className="text-gray-500 text-sm">暂无分类</p>
+                  ) : (
+                    categories.map((category) => (
+                      <div key={category.id} className="flex items-center justify-between p-2 border border-gray-200 rounded mb-2">
+                        <div>
+                          <div className="font-medium">{category.name}</div>
+                          {category.description && (
+                            <div className="text-sm text-gray-500">{category.description}</div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (confirm(`确定要删除分类 "${category.name}" 吗？`)) {
+                              deleteCategory(category.id);
+                            }
+                          }}
+                          className="text-red-600 hover:text-red-800 p-1"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setShowCategoryModal(false)}
+                  className="px-4 py-2 text-gray-600 hover:text-gray-800"
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 文档列表 */}
         <div className="bg-white rounded-lg shadow">
           <div className="p-6 border-b border-gray-200">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
               <h2 className="text-xl font-semibold text-gray-900 mb-4 sm:mb-0">
-                文档列表 ({documents.length})
+                文档列表 ({filteredDocuments.length})
               </h2>
-              <div className="relative">
-                <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="搜索文档..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
             </div>
           </div>
 
@@ -540,11 +764,18 @@ const Knowledge: React.FC = () => {
                       <div className="text-2xl">{getFileIcon(doc.file_type)}</div>
                       <div>
                         <h3 className="text-lg font-medium text-gray-900">{doc.title}</h3>
-                        <div className="flex items-center space-x-4 text-sm text-gray-500">
+                        <div className="flex items-center space-x-4 text-sm text-gray-500 mb-1">
                           <span>{formatFileSize(doc.file_size)}</span>
                           <span>{new Date(doc.upload_date).toLocaleDateString()}</span>
                           <span>{doc.chunk_count} 个片段</span>
                         </div>
+                        {doc.category_id && (
+                          <div className="text-sm">
+                            <span className="inline-block bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs">
+                              {categories.find(cat => cat.id === doc.category_id)?.name || '未知分类'}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center space-x-2">
@@ -568,6 +799,82 @@ const Knowledge: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* 分类管理模态框 */}
+      {showCategoryModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-96 max-w-md mx-4">
+            <h3 className="text-lg font-semibold mb-4">管理分类</h3>
+            
+            {/* 创建新分类 */}
+            <div className="mb-6">
+              <h4 className="text-md font-medium mb-3">创建新分类</h4>
+              <input
+                type="text"
+                placeholder="分类名称"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                className="w-full p-2 border border-gray-300 rounded mb-2"
+              />
+              <textarea
+                placeholder="分类描述（可选）"
+                value={newCategoryDescription}
+                onChange={(e) => setNewCategoryDescription(e.target.value)}
+                className="w-full p-2 border border-gray-300 rounded mb-3 h-20 resize-none"
+              />
+              <button
+                onClick={createCategory}
+                disabled={!newCategoryName.trim()}
+                className="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                创建分类
+              </button>
+            </div>
+
+            {/* 现有分类列表 */}
+            <div className="mb-6">
+              <h4 className="text-md font-medium mb-3">现有分类</h4>
+              <div className="max-h-40 overflow-y-auto">
+                {categories.length === 0 ? (
+                  <p className="text-gray-500 text-sm">暂无分类</p>
+                ) : (
+                  categories.map((category) => (
+                    <div key={category.id} className="flex items-center justify-between p-2 border border-gray-200 rounded mb-2">
+                      <div className="flex-1">
+                        <div className="font-medium">{category.name}</div>
+                        {category.description && (
+                          <div className="text-sm text-gray-600">{category.description}</div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => deleteCategory(category.id)}
+                        className="text-red-500 hover:text-red-700 p-1"
+                        title="删除分类"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* 关闭按钮 */}
+            <div className="flex justify-end">
+              <button
+                onClick={() => {
+                  setShowCategoryModal(false);
+                  setNewCategoryName('');
+                  setNewCategoryDescription('');
+                }}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded hover:bg-gray-400"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
