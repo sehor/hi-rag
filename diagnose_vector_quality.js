@@ -1,4 +1,5 @@
 import { supabaseAdmin } from './api/lib/supabase.ts';
+import { generateEmbedding as alibabaGenerateEmbedding } from './api/lib/alibaba-embedding.ts';
 import dotenv from 'dotenv';
 
 // 加载环境变量
@@ -55,28 +56,13 @@ async function diagnoseVectorQuality() {
     const testQuery = '根据数据库的健康检查，出了什么问题？';
     
     // 生成查询向量
-    console.log('🔄 生成查询向量...');
-    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8001';
+    console.log('🔄 使用阿里云嵌入服务生成查询向量...');
     
     try {
-      const response = await fetch(`${embeddingServiceUrl}/embed`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          documents: [testQuery]
-        })
-      });
+      // 使用阿里云嵌入服务生成查询向量
+      const queryEmbedding = await alibabaGenerateEmbedding(testQuery, "Given a web search query, retrieve relevant passages that answer the query");
       
-      if (!response.ok) {
-        throw new Error(`嵌入服务错误: ${response.status}`);
-      }
-      
-      const result = await response.json();
-      const queryEmbedding = result.embeddings[0];
-      
-      console.log('✅ 查询向量生成成功，维度:', queryEmbedding.length);
+      console.log('✅ 阿里云查询向量生成成功，维度:', queryEmbedding.length);
       
       // 执行向量搜索
       const { data: searchResults, error: searchError } = await supabaseAdmin
@@ -107,7 +93,7 @@ async function diagnoseVectorQuality() {
       }
       
     } catch (embeddingError) {
-      console.error('❌ 嵌入服务调用失败:', embeddingError);
+      console.error('❌ 阿里云嵌入服务调用失败:', embeddingError);
       console.log('⚠️ 无法生成查询向量，跳过向量搜索测试');
     }
     

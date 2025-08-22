@@ -27,57 +27,31 @@ interface ChatRequest {
   categoryId?: string;
 }
 
+import { generateEmbedding as alibabaGenerateEmbedding } from '../lib/alibaba-embedding.js';
+
 /**
- * 调用外部嵌入服务生成查询向量
+ * 调用阿里云嵌入服务生成查询向量
  */
 async function generateQueryEmbedding(query: string): Promise<number[]> {
   try {
-    const embeddingServiceUrl = process.env.EMBEDDING_SERVICE_URL || 'http://localhost:8001';
-    
-    console.log('🔄 调用外部嵌入服务生成查询向量...');
-    console.log('- 服务URL:', embeddingServiceUrl);
+    console.log('🔄 调用阿里云嵌入服务生成查询向量...');
     console.log('- 查询文本:', query);
     
-    // 直接使用原始查询文本，不添加指令前缀，保持与文档向量生成的一致性
-    const response = await fetch(`${embeddingServiceUrl}/embed`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        documents: [query]
-      })
-    });
+    // 使用阿里云嵌入服务，为查询文本生成向量，使用检索优化指令
+    const embedding = await alibabaGenerateEmbedding(query, "Given a web search query, retrieve relevant passages that answer the query");
     
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`嵌入服务响应错误: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-    
-    const result = await response.json();
-    
-    if (!result.embeddings || !Array.isArray(result.embeddings) || result.embeddings.length === 0) {
-      throw new Error('嵌入服务返回的数据格式无效');
-    }
-    
-    const embedding = result.embeddings[0];
-    if (!Array.isArray(embedding)) {
-      throw new Error('嵌入向量格式无效');
-    }
-    
-    console.log('✅ 查询向量生成成功');
+    console.log('✅ 阿里云查询向量生成成功');
     console.log('- 向量维度:', embedding.length);
-    console.log('- 服务消息:', result.message || '无消息');
     
     return embedding;
     
   } catch (error) {
-    console.error('❌ 调用嵌入服务失败:', error);
+    console.error('❌ 调用阿里云嵌入服务失败:', error);
     console.error('- 错误类型:', error?.constructor?.name || 'Unknown');
     console.error('- 错误消息:', error instanceof Error ? error.message : String(error));
     
     // 嵌入服务失败时直接抛出错误，不使用随机模拟向量
-    throw new Error(`嵌入服务失败: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`阿里云嵌入服务失败: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
