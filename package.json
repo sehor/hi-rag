@@ -13,7 +13,9 @@
     "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\""
   },
   "dependencies": {
+    "@alicloud/pop-core": "^1.8.0",
     "@supabase/supabase-js": "^2.55.0",
+    "axios": "^1.11.0",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
