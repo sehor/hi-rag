@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../lib/supabase.js';
 import { generateQueryEmbedding } from './embeddingService.js';
-import { extractKeywords, validateKeywordMatch, calculateKeywordMatchScore } from './keywordService.js';
+import { extractKeywords } from './keywordService.js';
 
 /**
  * 混合搜索：结合向量搜索和关键词搜索
@@ -11,49 +11,68 @@ import { extractKeywords, validateKeywordMatch, calculateKeywordMatchScore } fro
  * @returns 搜索结果数组
  */
 export async function searchRelevantChunks(query: string, userId: string, limit: number = 5, categoryId?: string) {
-  console.log('🔍 开始混合搜索相关文档块...');
-  console.log('- 用户ID:', userId);
-  console.log('- 分类ID:', categoryId);
+  console.log('🔍 开始混合搜索...');
   
   // 提取查询关键词
   const keywords = await extractKeywords(query);
-  console.log('🔑 提取的关键词:', keywords);
+  console.log('🔑 关键词:', keywords.join(', '));
+  
+  // 生成查询向量（只生成一次）
+  const queryEmbedding = await generateQueryEmbedding(query);
+  
+  if (!queryEmbedding || queryEmbedding.length === 0) {
+    console.log('⚠️ 向量生成失败，使用关键词搜索');
+    return await fallbackKeywordSearch(query, userId, limit, categoryId, keywords);
+  }
+  
+  // 如果关键词提取失败，直接使用向量搜索
+  if (keywords.length === 0) {
+    console.log('⚠️ 关键词提取失败，使用纯向量搜索');
+    try {
+      const vectorResults = await performVectorSearchWithEmbedding(queryEmbedding, userId, limit, categoryId);
+      console.log(`✅ 返回 ${vectorResults.length} 个结果`);
+      return vectorResults;
+    } catch (error) {
+      console.error('💥 向量搜索错误:', error);
+      return [];
+    }
+  }
   
   try {
-    // 同时执行向量搜索和关键词搜索
+    // 同时执行向量搜索和关键词搜索（传递已生成的向量和关键词）
     const [vectorResults, keywordResults] = await Promise.allSettled([
-      performVectorSearch(query, userId, limit * 2, categoryId),
-      fallbackKeywordSearch(query, userId, limit * 2, categoryId)
+      performVectorSearchWithEmbedding(queryEmbedding, userId, limit * 2, categoryId),
+      fallbackKeywordSearch(query, userId, limit * 2, categoryId, keywords)
     ]);
     
     // 获取搜索结果
     const vectorChunks = vectorResults.status === 'fulfilled' ? vectorResults.value : [];
     const keywordChunks = keywordResults.status === 'fulfilled' ? keywordResults.value : [];
     
-    console.log(`📊 向量搜索结果: ${vectorChunks.length} 个文档块`);
-    console.log(`📊 关键词搜索结果: ${keywordChunks.length} 个文档块`);
+    console.log(`📊 向量:${vectorChunks.length} 关键词:${keywordChunks.length}`);
     
     // 如果两种搜索都没有结果，返回空数组
     if (vectorChunks.length === 0 && keywordChunks.length === 0) {
-      console.log('⚠️ 混合搜索无结果');
+      console.log('⚠️ 无搜索结果');
       return [];
     }
     
     // 融合搜索结果
     const hybridResults = fuseSearchResults(vectorChunks, keywordChunks, keywords, limit);
     
-    console.log(`✅ 混合搜索最终返回 ${hybridResults.length} 个文档块`);
-    hybridResults.forEach((chunk: any, index: number) => {
-      console.log(`📋 排序 ${index + 1}: 综合分数 ${chunk.hybrid_score?.toFixed(4) || 'N/A'}`);
-    });
+    console.log(`✅ 返回 ${hybridResults.length} 个混合结果`);
     
     return hybridResults;
     
   } catch (error) {
     console.error('💥 混合搜索错误:', error);
-    // 如果混合搜索失败，回退到单独的关键词搜索
-    console.log('🔄 回退到关键字搜索...');
-    return await fallbackKeywordSearch(query, userId, limit, categoryId);
+    // 如果混合搜索失败，回退到向量搜索
+    try {
+      return await performVectorSearchWithEmbedding(queryEmbedding, userId, limit, categoryId);
+    } catch (fallbackError) {
+      console.error('💥 向量搜索回退失败:', fallbackError);
+      return [];
+    }
   }
 }
 
@@ -66,7 +85,7 @@ export async function searchRelevantChunks(query: string, userId: string, limit:
  * @returns 向量搜索结果数组
  */
 export async function performVectorSearch(query: string, userId: string, limit: number, categoryId?: string) {
-  console.log('🔍 执行向量相似度搜索...');
+  console.log('🔍 执行向量搜索...');
   
   // 生成查询向量
   const queryEmbedding = await generateQueryEmbedding(query);
@@ -75,8 +94,18 @@ export async function performVectorSearch(query: string, userId: string, limit: 
     throw new Error('查询向量生成失败');
   }
   
-  console.log('✅ 查询向量生成成功，维度:', queryEmbedding.length);
-  
+  return await performVectorSearchWithEmbedding(queryEmbedding, userId, limit, categoryId);
+}
+
+/**
+ * 使用预生成的向量执行向量搜索
+ * @param queryEmbedding 查询向量
+ * @param userId 用户ID
+ * @param limit 返回结果数量限制
+ * @param categoryId 分类ID（可选）
+ * @returns 向量搜索结果数组
+ */
+export async function performVectorSearchWithEmbedding(queryEmbedding: number[], userId: string, limit: number, categoryId?: string) {
   const { data: chunks, error } = await supabaseAdmin
     .rpc('search_similar_chunks_with_category', {
       query_embedding: queryEmbedding,
@@ -103,8 +132,6 @@ export async function performVectorSearch(query: string, userId: string, limit: 
  * @returns 融合后的搜索结果数组
  */
 export function fuseSearchResults(vectorChunks: any[], keywordChunks: any[], keywords: string[], limit: number) {
-  console.log('🔄 开始融合搜索结果...');
-  
   // 创建结果映射，避免重复
   const resultMap = new Map<string, any>();
   
@@ -117,9 +144,6 @@ export function fuseSearchResults(vectorChunks: any[], keywordChunks: any[], key
   const keywordScores = keywordChunks.map(chunk => chunk.keyword_score || 0).filter(score => score > 0);
   const maxKeywordScore = keywordScores.length > 0 ? Math.max(...keywordScores) : 1;
   const minKeywordScore = keywordScores.length > 0 ? Math.min(...keywordScores) : 0;
-  
-  console.log(`📊 向量分数范围: ${minVectorScore.toFixed(4)} - ${maxVectorScore.toFixed(4)}`);
-  console.log(`📊 关键词分数范围: ${minKeywordScore} - ${maxKeywordScore}`);
   
   // 处理向量搜索结果
   vectorChunks.forEach(chunk => {
@@ -222,119 +246,117 @@ export function fuseSearchResults(vectorChunks: any[], keywordChunks: any[], key
     })
     .slice(0, limit);
   
-  console.log(`🔗 融合完成，返回 ${fusedResults.length} 个结果`);
-  fusedResults.forEach((chunk, index) => {
-    console.log(`📋 结果 ${index + 1}: 混合分数=${chunk.hybrid_score.toFixed(4)}, 关键词匹配=${(chunk.keyword_match_ratio * 100).toFixed(1)}%`);
-  });
-  
   return fusedResults;
 }
 
 /**
- * 关键字搜索回退方案 - 使用多关键词搜索
+ * 关键字搜索回退方案 - 使用简单文本搜索
  * @param query 查询文本
  * @param userId 用户ID
  * @param limit 返回结果数量限制
  * @param categoryId 分类ID（可选）
+ * @param keywords 预提取的关键词（可选）
  * @returns 关键词搜索结果数组
  */
-export async function fallbackKeywordSearch(query: string, userId: string, limit: number = 5, categoryId?: string) {
-  console.log('🔍 执行关键字搜索回退方案...');
+export async function fallbackKeywordSearch(query: string, userId: string, limit: number = 5, categoryId?: string, keywords?: string[]) {
+  console.log('🔍 执行关键词搜索...');
   
   try {
-    // 提取关键词
-    const keywords = await extractKeywords(query);
-    console.log('🔑 提取的关键词:', keywords);
-    
-    if (keywords.length === 0) {
-      console.log('⚠️ 没有提取到有效关键词，使用原始查询');
-      // 如果没有关键词，回退到原始查询
-      let queryBuilder = supabaseAdmin
-        .from('document_chunks')
-        .select(`
-          id,
-          content,
-          chunk_index,
-          documents!inner(
-            id,
-            title,
-            user_id,
-            category_id
-          )
-        `)
-        .eq('documents.user_id', userId)
-        .ilike('content', `%${query}%`);
-      
-      if (categoryId) {
-        queryBuilder = queryBuilder.eq('documents.category_id', categoryId);
-      }
-      
-      const { data: chunks, error } = await queryBuilder.limit(limit);
-      return chunks || [];
+    // 使用传入的关键词或提取新的关键词
+    let searchKeywords = keywords;
+    if (!searchKeywords) {
+      searchKeywords = await extractKeywords(query);
+      console.log('🔑 提取关键词:', searchKeywords.join(', '));
     }
     
-    // 使用多关键词搜索
-    const searchResults = new Map<string, any>();
-    const keywordScores = new Map<string, number>();
+    // 如果没有关键词，使用原始查询进行文本搜索
+    const searchTerms = searchKeywords.length > 0 ? searchKeywords : [query];
     
-    // 为每个关键词执行搜索
-    for (const keyword of keywords) {
-      let keywordQueryBuilder = supabaseAdmin
-        .from('document_chunks')
-        .select(`
+    // 构建查询条件
+    let queryBuilder = supabaseAdmin
+      .from('document_chunks')
+      .select(`
+        id,
+        document_id,
+        content,
+        chunk_index,
+        created_at,
+        metadata,
+        documents!inner(
           id,
-          content,
-          chunk_index,
-          documents!inner(
-            id,
-            title,
-            user_id,
-            category_id
-          )
-        `)
-        .eq('documents.user_id', userId)
-        .ilike('content', `%${keyword}%`);
+          title,
+          user_id,
+          category_id
+        )
+      `)
+      .eq('documents.user_id', userId);
+    
+    // 添加分类过滤
+    if (categoryId) {
+      queryBuilder = queryBuilder.eq('documents.category_id', categoryId);
+    }
+    
+    // 构建文本搜索条件 - 使用 OR 连接多个关键词
+    const searchConditions = searchTerms.map(term => 
+      `content.ilike.%${term}%`
+    ).join(',');
+    
+    queryBuilder = queryBuilder.or(searchConditions);
+    
+    const { data: chunks, error } = await queryBuilder
+      .limit(limit * 2) // 获取更多结果用于排序
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('❌ 文本搜索失败:', error);
+      return [];
+    }
+    
+    if (!chunks || chunks.length === 0) {
+      return [];
+    }
+    
+    // 为结果添加关键词匹配分数并排序
+    const rankedChunks = chunks.map(chunk => {
+      const content = chunk.content.toLowerCase();
+      let keywordScore = 0;
+      let matchedKeywords = 0;
       
-      if (categoryId) {
-        keywordQueryBuilder = keywordQueryBuilder.eq('documents.category_id', categoryId);
-      }
-      
-      const { data: keywordChunks, error } = await keywordQueryBuilder.limit(limit * 2);
-      
-      if (error) {
-        console.error(`❌ 关键词 "${keyword}" 搜索失败:`, error);
-        continue;
-      }
-      
-      // 合并结果并计算分数
-      keywordChunks?.forEach(chunk => {
-        const chunkId = chunk.id;
-        if (!searchResults.has(chunkId)) {
-          searchResults.set(chunkId, chunk);
-          keywordScores.set(chunkId, 0);
+      // 计算关键词匹配分数
+      searchTerms.forEach(term => {
+        const termLower = term.toLowerCase();
+        if (content.includes(termLower)) {
+          matchedKeywords++;
+          // 计算词频
+          const regex = new RegExp(termLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+          const matches = content.match(regex) || [];
+          keywordScore += matches.length;
         }
-        
-        // 计算关键词匹配分数
-        const content = chunk.content.toLowerCase();
-        const keywordCount = (content.match(new RegExp(keyword.toLowerCase(), 'g')) || []).length;
-        const currentScore = keywordScores.get(chunkId) || 0;
-        keywordScores.set(chunkId, currentScore + keywordCount);
       });
-    }
-    
-    // 转换为数组并按分数排序
-    const rankedChunks = Array.from(searchResults.values())
-      .map(chunk => ({
+      
+      // 计算匹配度（匹配的关键词数量 / 总关键词数量）
+      const matchRatio = searchTerms.length > 0 ? matchedKeywords / searchTerms.length : 0;
+      
+      return {
         ...chunk,
-        keyword_score: keywordScores.get(chunk.id) || 0
-      }))
-      .sort((a, b) => b.keyword_score - a.keyword_score)
-      .slice(0, limit);
-    
-    console.log(`✅ 多关键词搜索找到 ${rankedChunks.length} 个相关文档块`);
-    rankedChunks.forEach((chunk, index) => {
-      console.log(`📊 文档块 ${index + 1}: 关键词分数 ${chunk.keyword_score}`);
-    });
+        keyword_score: keywordScore,
+        match_ratio: matchRatio,
+        matched_keywords: matchedKeywords
+      };
+    })
+    .sort((a, b) => {
+      // 首先按匹配度排序
+      if (a.match_ratio !== b.match_ratio) {
+        return b.match_ratio - a.match_ratio;
+      }
+      // 然后按关键词分数排序
+      if (a.keyword_score !== b.keyword_score) {
+        return b.keyword_score - a.keyword_score;
+      }
+      // 最后按创建时间排序
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    })
+    .slice(0, limit);
     
     return rankedChunks;
     
