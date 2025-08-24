@@ -51,6 +51,31 @@ export async function searchRelevantChunks(query: string, userId: string, limit:
     
     console.log(`📊 向量:${vectorChunks.length} 关键词:${keywordChunks.length}`);
     
+    // 详细打印向量搜索找到的文档
+    if (vectorChunks.length > 0) {
+      console.log('🎯 向量搜索找到的文档:');
+      vectorChunks.forEach((chunk, index) => {
+        const title = chunk.documents?.title || '未知文档';
+        const similarity = chunk.similarity || 0;
+        console.log(`  ${index + 1}. ${title} (相似度: ${similarity.toFixed(4)})`);
+      });
+    } else {
+      console.log('🎯 向量搜索未找到任何文档');
+    }
+    
+    // 详细打印关键词搜索找到的文档
+    if (keywordChunks.length > 0) {
+      console.log('🔍 关键词搜索找到的文档:');
+      keywordChunks.forEach((chunk, index) => {
+        const title = chunk.documents?.title || '未知文档';
+        const keywordScore = chunk.keyword_score || 0;
+        const matchRatio = chunk.match_ratio || 0;
+        console.log(`  ${index + 1}. ${title} (关键词分数: ${keywordScore}, 匹配度: ${(matchRatio * 100).toFixed(1)}%)`);
+      });
+    } else {
+      console.log('🔍 关键词搜索未找到任何文档');
+    }
+    
     // 如果两种搜索都没有结果，返回空数组
     if (vectorChunks.length === 0 && keywordChunks.length === 0) {
       console.log('⚠️ 无搜索结果');
@@ -120,7 +145,23 @@ export async function performVectorSearchWithEmbedding(queryEmbedding: number[],
     throw error;
   }
   
-  return chunks || [];
+  const results = chunks || [];
+  
+  // 打印向量搜索的详细结果
+  if (results.length > 0) {
+    console.log('📈 向量搜索结果详情:');
+    results.forEach((chunk, index) => {
+      const title = chunk.documents?.title || '未知文档';
+      const similarity = chunk.similarity || 0;
+      console.log(`  ${index + 1}. 文档: ${title}`);
+      console.log(`     相似度: ${similarity.toFixed(4)}`);
+      console.log(`     内容预览: ${chunk.content.substring(0, 100)}...`);
+    });
+  } else {
+    console.log('📈 向量搜索未找到匹配结果');
+  }
+  
+  return results;
 }
 
 /**
@@ -271,6 +312,7 @@ export async function fallbackKeywordSearch(query: string, userId: string, limit
     
     // 如果没有关键词，使用原始查询进行文本搜索
     const searchTerms = searchKeywords.length > 0 ? searchKeywords : [query];
+    console.log('🔎 使用搜索词:', searchTerms.join(', '));
     
     // 构建查询条件
     let queryBuilder = supabaseAdmin
@@ -313,8 +355,11 @@ export async function fallbackKeywordSearch(query: string, userId: string, limit
     }
     
     if (!chunks || chunks.length === 0) {
+      console.log('🔎 关键词搜索未找到任何匹配的文档块');
       return [];
     }
+    
+    console.log(`🔎 关键词搜索找到 ${chunks.length} 个文档块`);
     
     // 为结果添加关键词匹配分数并排序
     const rankedChunks = chunks.map(chunk => {
@@ -357,6 +402,23 @@ export async function fallbackKeywordSearch(query: string, userId: string, limit
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
     })
     .slice(0, limit);
+    
+    // 打印关键词搜索的详细结果
+    if (rankedChunks.length > 0) {
+      console.log('📋 关键词搜索结果详情:');
+      rankedChunks.forEach((chunk, index) => {
+        const title = chunk.documents?.title || '未知文档';
+        const keywordScore = chunk.keyword_score || 0;
+        const matchRatio = chunk.match_ratio || 0;
+        const matchedKeywords = chunk.matched_keywords || 0;
+        console.log(`  ${index + 1}. 文档: ${title}`);
+        console.log(`     关键词分数: ${keywordScore}`);
+        console.log(`     匹配度: ${(matchRatio * 100).toFixed(1)}% (${matchedKeywords}/${searchTerms.length} 个关键词)`);
+        console.log(`     内容预览: ${chunk.content.substring(0, 100)}...`);
+      });
+    } else {
+      console.log('📋 关键词搜索处理后无结果');
+    }
     
     return rankedChunks;
     
